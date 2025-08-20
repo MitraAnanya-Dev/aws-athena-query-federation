@@ -24,6 +24,8 @@ import com.amazonaws.athena.connector.lambda.domain.Split;
 import com.amazonaws.athena.connectors.jdbc.manager.FederationExpressionParser;
 import com.amazonaws.athena.connectors.jdbc.manager.JdbcSplitQueryBuilder;
 import com.google.common.base.Strings;
+import org.apache.calcite.sql.SqlDialect;
+import org.apache.calcite.sql.dialect.SnowflakeSqlDialect;
 
 import java.util.Collections;
 import java.util.List;
@@ -90,6 +92,21 @@ public class SnowflakeQueryStringBuilder
         if (primaryKey.equals("")) {
             return "";
         }
-        return "ORDER BY " + primaryKey + " limit " + xLimit + " offset " + xOffset;
+        return "ORDER BY " + primaryKey + " " +  appendLimitOffsetWithValue(xLimit, xOffset);
+    }
+
+    @Override
+    protected SqlDialect getSqlDialect()
+    {
+        return SnowflakeSqlDialect.DEFAULT;
+    }
+
+    @Override
+    protected String appendLimitOffsetWithValue(String limit, String offset)
+    {
+        if (offset == null) {
+            return "limit " + limit;
+        }
+        return "limit " + limit + " offset" + offset;
     }
 }

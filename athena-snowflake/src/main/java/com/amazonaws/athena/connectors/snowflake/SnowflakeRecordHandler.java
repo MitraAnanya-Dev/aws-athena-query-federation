@@ -85,16 +85,15 @@ public class SnowflakeRecordHandler extends JdbcRecordHandler
         PreparedStatement preparedStatement;
         try {
             if (constraints.isQueryPassThrough()) {
-            preparedStatement = buildQueryPassthroughSql(jdbcConnection, constraints);
-        }
-        else {
-            preparedStatement = jdbcSplitQueryBuilder.buildSql(jdbcConnection, null, tableNameInput.getSchemaName(), tableNameInput.getTableName(), schema, constraints, split);
-        }
+                preparedStatement = buildQueryPassthroughSql(jdbcConnection, constraints);
+            }
+            else {
+                preparedStatement = jdbcSplitQueryBuilder.buildSql(jdbcConnection, null, tableNameInput.getSchemaName(), tableNameInput.getTableName(), schema, constraints, split);
+            }
 
-        // Disable fetching all rows.
-        preparedStatement.setFetchSize(FETCH_SIZE);
-        }
-        catch (SQLException e) {
+            // Disable fetching all rows.
+            preparedStatement.setFetchSize(FETCH_SIZE);
+        } catch (SQLException e) {
             throw new AthenaConnectorException(e.getMessage(), ErrorDetails.builder().errorCode(FederationSourceErrorCode.INTERNAL_SERVICE_EXCEPTION.toString()).build());
         }
         return preparedStatement;
@@ -105,7 +104,7 @@ public class SnowflakeRecordHandler extends JdbcRecordHandler
     {
         final String secretName = getDatabaseConnectionConfig().getSecret();
         if (StringUtils.isNotBlank(secretName)) {
-            return new SnowflakeCredentialsProvider(secretName);
+            return new SnowflakeCredentialsProvider(secretName, getSecretsManager());
         }
 
         return null;

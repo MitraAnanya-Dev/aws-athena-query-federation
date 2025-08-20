@@ -208,7 +208,7 @@ public final class SubstraitFunctionParser
                 return Pair.of(literal.getDate(), arrowType);
             case DECIMAL:
                 arrowType = new ArrowType.Decimal(38, 10, 128);
-                return Pair.of(literal.getDecimal(), arrowType);
+                return Pair.of(literal.getDecimal()., arrowType);
             case VAR_CHAR:
                 arrowType = new ArrowType.Utf8();
                 return Pair.of(literal.getVarChar().getValue(), arrowType);
