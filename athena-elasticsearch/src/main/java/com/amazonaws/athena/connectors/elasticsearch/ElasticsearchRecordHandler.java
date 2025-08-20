@@ -24,13 +24,21 @@ import com.amazonaws.athena.connector.lambda.data.Block;
 import com.amazonaws.athena.connector.lambda.data.BlockSpiller;
 import com.amazonaws.athena.connector.lambda.data.writers.GeneratedRowWriter;
 import com.amazonaws.athena.connector.lambda.data.writers.extractors.Extractor;
+import com.amazonaws.athena.connector.lambda.domain.predicate.Constraints;
+import com.amazonaws.athena.connector.lambda.domain.predicate.QueryPlan;
 import com.amazonaws.athena.connector.lambda.exceptions.AthenaConnectorException;
 import com.amazonaws.athena.connector.lambda.handlers.RecordHandler;
 import com.amazonaws.athena.connector.lambda.records.ReadRecordsRequest;
+import com.amazonaws.athena.connector.substrait.SubstraitRelUtils;
+import com.amazonaws.athena.connector.substrait.model.ColumnPredicate;
+import com.amazonaws.athena.connector.substrait.model.SubstraitRelModel;
 import com.amazonaws.athena.connectors.elasticsearch.qpt.ElasticsearchQueryPassthrough;
+import io.substrait.proto.Plan;
+import io.substrait.proto.FetchRel;
 import org.apache.arrow.util.VisibleForTesting;
 import org.apache.arrow.vector.types.pojo.Field;
 import org.apache.commons.lang3.StringUtils;
+import org.apache.commons.lang3.tuple.Pair;
 import org.elasticsearch.action.search.ClearScrollRequest;
 import org.elasticsearch.action.search.SearchRequest;
 import org.elasticsearch.action.search.SearchResponse;
@@ -52,6 +60,7 @@ import software.amazon.awssdk.services.secretsmanager.SecretsManagerClient;
 
 import java.io.IOException;
 import java.util.Iterator;
+import java.util.List;
 import java.util.Map;
 import java.util.concurrent.TimeUnit;
 
@@ -135,13 +144,24 @@ public class ElasticsearchRecordHandler
      * ability to control Block size. The resulting increase in Block size may cause failures and reduced performance.
      */
     @Override
-    protected void readWithConstraint(BlockSpiller spiller, ReadRecordsRequest recordsRequest,
+    protected void readWithConstraint(BlockSpiller spiller,
+                                      ReadRecordsRequest recordsRequest,
                                       QueryStatusChecker queryStatusChecker)
             throws RuntimeException
     {
         String domain;
         QueryBuilder query;
         String index;
+        // ---------------------- Substrait Plan extraction ----------------------
+        QueryPlan queryPlan = recordsRequest.getConstraints().getQueryPlan();
+        Plan plan = null;
+        if (queryPlan != null) {
+            plan = SubstraitRelUtils.deserializeSubstraitPlan(queryPlan.getSubstraitPlan());
+        }
+        // ---------------------- LIMIT pushdown support ----------------------
+        Pair<Boolean, Integer> limitPair = getLimit(plan, recordsRequest.getConstraints());
+        boolean hasLimit = limitPair.getLeft();
+        int limit = limitPair.getRight();
         if (recordsRequest.getConstraints().isQueryPassThrough()) {
             Map<String, String> qptArgs = recordsRequest.getConstraints().getQueryPassthroughArguments();
             queryPassthrough.verify(qptArgs);
@@ -152,71 +172,82 @@ public class ElasticsearchRecordHandler
         else {
             domain = recordsRequest.getTableName().getSchemaName();
             index = recordsRequest.getSplit().getProperty(ElasticsearchMetadataHandler.INDEX_KEY);
-            query = ElasticsearchQueryUtils.getQuery(recordsRequest.getConstraints());
+            // Build query either from Substrait plan or constraints
+            Map<String, List<ColumnPredicate>> columnPredicateMap = ElasticsearchQueryUtils.buildFilterPredicatesFromPlan(plan);
+            if (!columnPredicateMap.isEmpty()) {
+                query = ElasticsearchQueryUtils.makeQueryFromPlan(columnPredicateMap);
+            } else {
+                query = ElasticsearchQueryUtils.getQuery(recordsRequest.getConstraints());
+            }
         }
-
         String endpoint = recordsRequest.getSplit().getProperty(domain);
         String shard = recordsRequest.getSplit().getProperty(ElasticsearchMetadataHandler.SHARD_KEY);
         String username = recordsRequest.getSplit().getProperty(ElasticsearchMetadataHandler.SECRET_USERNAME);
         String password = recordsRequest.getSplit().getProperty(ElasticsearchMetadataHandler.SECRET_PASSWORD);
         boolean useSecret = StringUtils.isNotBlank(username) && StringUtils.isNotBlank(password);
-        logger.info("readWithConstraint - enter - Domain: {}, Index: {}, Mapping: {}, Query: {}",
-                domain, index,
-                recordsRequest.getSchema(), query);
+        logger.info("readWithConstraint - Domain: {}, Index: {}, Limit: {}, Query: {}",
+                domain, index, hasLimit ? limit : "none", query);
         long numRows = 0;
-
         if (queryStatusChecker.isQueryRunning()) {
-            AwsRestHighLevelClient client = useSecret ? clientFactory.getOrCreateClient(endpoint, username, password) : clientFactory.getOrCreateClient(endpoint);
+            AwsRestHighLevelClient client = useSecret
+                    ? clientFactory.getOrCreateClient(endpoint, username, password)
+                    : clientFactory.getOrCreateClient(endpoint);
             try {
-                // Create field extractors for all data types in the schema.
                 GeneratedRowWriter rowWriter = createFieldExtractors(recordsRequest);
-
-                // Create a new search-source injected with the projection, predicate, and the pagination batch size.
+                // Build search-source with limit pushdown
+                int batchSize = hasLimit ? Math.min(limit, QUERY_BATCH_SIZE) : QUERY_BATCH_SIZE;
                 SearchSourceBuilder searchSource = new SearchSourceBuilder()
-                        .size(QUERY_BATCH_SIZE)
+                        .size(batchSize)
                         .timeout(new TimeValue(queryTimeout, TimeUnit.SECONDS))
                         .fetchSource(ElasticsearchQueryUtils.getProjection(recordsRequest.getSchema()))
                         .query(query);
-
-                //init scroll
                 Scroll scroll = new Scroll(TimeValue.timeValueSeconds(this.scrollTimeout));
-                // Create a new search-request for the specified index.
                 SearchRequest searchRequest = new SearchRequest(index)
                         .preference(shard)
                         .scroll(scroll)
                         .source(searchSource.from(0));
-
-                //Read the returned scroll id, which points to the search context that's being kept alive and will be needed in the following search scroll call
                 SearchResponse searchResponse = client.search(searchRequest, RequestOptions.DEFAULT);
-
                 while (searchResponse.getHits() != null
                         && searchResponse.getHits().getHits() != null
                         && searchResponse.getHits().getHits().length > 0
                         && queryStatusChecker.isQueryRunning()) {
                     Iterator<SearchHit> finalIterator = searchResponse.getHits().iterator();
                     while (finalIterator.hasNext() && queryStatusChecker.isQueryRunning()) {
+                        if (hasLimit && numRows >= limit) {
+                            logger.info("Reached limit of {} rows, exiting scroll iteration.", numRows);
+                            break;
+                        }
                         ++numRows;
+                        SearchHit hit = finalIterator.next();
                         spiller.writeRows((Block block, int rowNum) ->
-                                rowWriter.writeRow(block, rowNum, client.getDocument(finalIterator.next())) ? 1 : 0);
+                                rowWriter.writeRow(block, rowNum, client.getDocument(hit)) ? 1 : 0);
                     }
-
-                    //prep for next hits and keep track of scroll id.
+                    if (hasLimit && numRows >= limit) {
+                        break; // break outer loop
+                    }
+                    // Scroll to next batch
                     SearchScrollRequest scrollRequest = new SearchScrollRequest(searchResponse.getScrollId()).scroll(scroll);
                     searchResponse = client.scroll(scrollRequest, RequestOptions.DEFAULT);
                     if (searchResponse.isTimedOut()) {
-                        throw new AthenaConnectorException("Request for index (" + index + ") " + shard + " timed out.", ErrorDetails.builder().errorCode(FederationSourceErrorCode.OPERATION_TIMEOUT_EXCEPTION.toString()).build());
+                        throw new AthenaConnectorException("Request for index (" + index + ") " + shard + " timed out.",
+                                ErrorDetails.builder()
+                                        .errorCode(FederationSourceErrorCode.OPERATION_TIMEOUT_EXCEPTION.toString())
+                                        .build());
                     }
                 }
-
+                // Cleanup scroll
                 ClearScrollRequest clearScrollRequest = new ClearScrollRequest();
                 clearScrollRequest.addScrollId(searchResponse.getScrollId());
                 client.clearScroll(clearScrollRequest, RequestOptions.DEFAULT);
             }
             catch (IOException error) {
-                throw new AthenaConnectorException("Error sending search query: " + error.getMessage(), ErrorDetails.builder().errorCode(FederationSourceErrorCode.INTERNAL_SERVICE_EXCEPTION.toString()).errorMessage(error.getMessage()).build());
+                throw new AthenaConnectorException("Error sending search query: " + error.getMessage(),
+                        ErrorDetails.builder()
+                                .errorCode(FederationSourceErrorCode.INTERNAL_SERVICE_EXCEPTION.toString())
+                                .errorMessage(error.getMessage())
+                                .build());
             }
         }
-
         logger.info("readWithConstraint: numRows[{}]", numRows);
     }
 
@@ -254,5 +285,48 @@ public class ElasticsearchRecordHandler
     protected int getQueryBatchSize()
     {
         return QUERY_BATCH_SIZE;
+    }
+
+    Pair<Boolean, Integer> getLimit(Plan plan, Constraints constraints)
+    {
+        SubstraitRelModel substraitRelModel = null;
+        boolean useQueryPlan = false;
+        if (plan != null) {
+            substraitRelModel = SubstraitRelModel.buildSubstraitRelModel(
+                    plan.getRelations(0).getRoot().getInput());
+            useQueryPlan = true;
+        }
+        if (canApplyLimit(constraints, substraitRelModel, useQueryPlan)) {
+            if (useQueryPlan) {
+                int limit = getLimit(substraitRelModel);
+                return Pair.of(true, limit);
+            }
+            else {
+                return Pair.of(true, (int) constraints.getLimit());
+            }
+        }
+        return Pair.of(false, -1);
+    }
+
+    private boolean canApplyLimit(Constraints constraints,
+                                  SubstraitRelModel substraitRelModel,
+                                  boolean useQueryPlan)
+    {
+        if (useQueryPlan) {
+            // Allow LIMIT only if FetchRel is present and no SortRel
+            if (substraitRelModel.getSortRel() == null && substraitRelModel.getFetchRel() != null) {
+                int limit = getLimit(substraitRelModel);
+                return limit > 0;
+            }
+            return false;
+        }
+        // For constraints, don’t apply if order-by exists
+        return constraints.hasLimit() && !constraints.hasNonEmptyOrderByClause();
+    }
+
+    private int getLimit(SubstraitRelModel substraitRelModel)
+    {
+        FetchRel fetchRel = substraitRelModel.getFetchRel();
+        return (int) fetchRel.getCount();
     }
 }

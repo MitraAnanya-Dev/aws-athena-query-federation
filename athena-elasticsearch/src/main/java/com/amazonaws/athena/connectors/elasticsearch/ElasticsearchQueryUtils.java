@@ -23,10 +23,18 @@ import com.amazonaws.athena.connector.lambda.domain.predicate.Constraints;
 import com.amazonaws.athena.connector.lambda.domain.predicate.EquatableValueSet;
 import com.amazonaws.athena.connector.lambda.domain.predicate.Range;
 import com.amazonaws.athena.connector.lambda.domain.predicate.ValueSet;
+import com.amazonaws.athena.connector.substrait.SubstraitFunctionParser;
+import com.amazonaws.athena.connector.substrait.SubstraitMetadataParser;
+import com.amazonaws.athena.connector.substrait.model.ColumnPredicate;
+import com.amazonaws.athena.connector.substrait.model.Operator;
+import com.amazonaws.athena.connector.substrait.model.SubstraitRelModel;
+import io.substrait.proto.Plan;
+import io.substrait.proto.SimpleExtensionDeclaration;
 import org.apache.arrow.vector.types.pojo.ArrowType;
 import org.apache.arrow.vector.types.pojo.Field;
 import org.apache.arrow.vector.types.pojo.Schema;
 import org.elasticsearch.common.Strings;
+import org.elasticsearch.index.query.BoolQueryBuilder;
 import org.elasticsearch.index.query.QueryBuilder;
 import org.elasticsearch.index.query.QueryBuilders;
 import org.elasticsearch.search.fetch.subphase.FetchSourceContext;
@@ -34,6 +42,7 @@ import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
 import java.util.ArrayList;
+import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
 
@@ -72,6 +81,39 @@ class ElasticsearchQueryUtils
 
     private ElasticsearchQueryUtils() {}
 
+    public static Map<String, List<ColumnPredicate>> buildFilterPredicatesFromPlan(Plan plan)
+    {
+        if (plan == null || plan.getRelationsList().isEmpty()) {
+            return new HashMap<>();
+        }
+        SubstraitRelModel substraitRelModel = SubstraitRelModel.buildSubstraitRelModel(
+                plan.getRelations(0).getRoot().getInput());
+        if (substraitRelModel.getFilterRel() == null) {
+            return new HashMap<>();
+        }
+        List<SimpleExtensionDeclaration> extensionDeclarations = plan.getExtensionsList();
+        List<String> tableColumns = SubstraitMetadataParser.getTableColumns(substraitRelModel);
+        return SubstraitFunctionParser.getColumnPredicatesMap(
+                extensionDeclarations,
+                substraitRelModel.getFilterRel().getCondition(),
+                tableColumns);
+    }
+
+    /**
+     * Converts Substrait column predicates to Elasticsearch QueryBuilder
+     */
+    public static QueryBuilder makeQueryFromPlan(Map<String, List<ColumnPredicate>> predicates)
+    {
+        BoolQueryBuilder boolQuery = QueryBuilders.boolQuery();
+        for (Map.Entry<String, List<ColumnPredicate>> entry : predicates.entrySet()) {
+            QueryBuilder filter = convertColumnPredicatesToES(entry.getKey(), entry.getValue());
+            if (filter != null) {
+                boolQuery.filter(filter);  // add as must/filter
+            }
+        }
+        return boolQuery.hasClauses() ? boolQuery : QueryBuilders.matchAllQuery();
+    }
+
     /**
      * Creates a projection (using the schema) on which fields should be included in the search index request. For
      * complex type STRUCT, there is no need to include each individual nested field in the projection. Since the
@@ -95,7 +137,7 @@ class ElasticsearchQueryUtils
 
     /**
      * Given a set of Constraints, create the query that can push predicates into the Elasticsearch data-source.
-     * @param constraintSummary is a map containing the constraints used to form the predicate for predicate push-down.
+     * @param constraints is a map containing the constraints used to form the predicate for predicate push-down.
      * @return the query builder that will be injected into the query.
      */
     protected static QueryBuilder getQuery(Constraints constraints)
@@ -254,5 +296,46 @@ class ElasticsearchQueryUtils
 
         // field:([value1 TO value2] OR value3 OR value4 OR value5...)
         return fieldName + ":(" + Strings.collectionToDelimitedString(disjuncts, OR_OPER) + ")";
+    }
+
+    /**
+     * Converts a list of ColumnPredicates into an Elasticsearch QueryBuilder
+     */
+    private static QueryBuilder convertColumnPredicatesToES(String column, List<ColumnPredicate> colPreds)
+    {
+        BoolQueryBuilder bool = QueryBuilders.boolQuery();
+        for (ColumnPredicate pred : colPreds) {
+            Object value = pred.getValue();
+            Operator op = pred.getOperator();
+            switch (op) {
+                case EQUAL:
+                    bool.must(QueryBuilders.termQuery(column, value));
+                    break;
+                case NOT_EQUAL:
+                    bool.mustNot(QueryBuilders.termQuery(column, value));
+                    break;
+                case GREATER_THAN:
+                    bool.must(QueryBuilders.rangeQuery(column).gt(value));
+                    break;
+                case GREATER_THAN_OR_EQUAL_TO:
+                    bool.must(QueryBuilders.rangeQuery(column).gte(value));
+                    break;
+                case LESS_THAN:
+                    bool.must(QueryBuilders.rangeQuery(column).lt(value));
+                    break;
+                case LESS_THAN_OR_EQUAL_TO:
+                    bool.must(QueryBuilders.rangeQuery(column).lte(value));
+                    break;
+                case IS_NULL:
+                    bool.mustNot(QueryBuilders.existsQuery(column));
+                    break;
+                case IS_NOT_NULL:
+                    bool.must(QueryBuilders.existsQuery(column));
+                    break;
+                default:
+                    throw new UnsupportedOperationException("Unsupported operator: " + op);
+            }
+        }
+        return bool.hasClauses() ? bool : null;
     }
 }
