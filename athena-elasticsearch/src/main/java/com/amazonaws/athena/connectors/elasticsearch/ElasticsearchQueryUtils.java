@@ -81,8 +81,10 @@ class ElasticsearchQueryUtils
 
     private ElasticsearchQueryUtils() {}
 
-    public static Map<String, List<ColumnPredicate>> buildFilterPredicatesFromPlan(Plan plan)
-    {
+    /**
+     * Parses Substrait plan and extracts filter predicates per column.
+     */
+    public static Map<String, List<ColumnPredicate>> buildFilterPredicatesFromPlan(Plan plan) {
         if (plan == null || plan.getRelationsList().isEmpty()) {
             return new HashMap<>();
         }
@@ -98,20 +100,28 @@ class ElasticsearchQueryUtils
                 substraitRelModel.getFilterRel().getCondition(),
                 tableColumns);
     }
-
     /**
-     * Converts Substrait column predicates to Elasticsearch QueryBuilder
+     * Converts Substrait column predicates to an Elasticsearch query string query.
      */
-    public static QueryBuilder makeQueryFromPlan(Map<String, List<ColumnPredicate>> predicates)
-    {
-        BoolQueryBuilder boolQuery = QueryBuilders.boolQuery();
+    public static QueryBuilder makeQueryFromPlan(Map<String, List<ColumnPredicate>> predicates) {
+        if (predicates == null || predicates.isEmpty()) {
+            logger.info("No predicates formed from Substrait plan.");
+            return QueryBuilders.matchAllQuery();
+        }
+        List<String> predicateStrings = new ArrayList<>();
         for (Map.Entry<String, List<ColumnPredicate>> entry : predicates.entrySet()) {
-            QueryBuilder filter = convertColumnPredicatesToES(entry.getKey(), entry.getValue());
-            if (filter != null) {
-                boolQuery.filter(filter);  // add as must/filter
+            String clause = convertColumnPredicatesToString(entry.getKey(), entry.getValue());
+            if (!clause.isEmpty()) {
+                predicateStrings.add(clause);
             }
         }
-        return boolQuery.hasClauses() ? boolQuery : QueryBuilders.matchAllQuery();
+        if (predicateStrings.isEmpty()) {
+            return QueryBuilders.matchAllQuery();
+        }
+        // Join predicates with AND
+        String combined = Strings.collectionToDelimitedString(predicateStrings, AND_OPER);
+        logger.info("Formed QueryPlan predicates: {}", combined);
+        return QueryBuilders.queryStringQuery(combined).queryName(combined);
     }
 
     /**
@@ -299,43 +309,42 @@ class ElasticsearchQueryUtils
     }
 
     /**
-     * Converts a list of ColumnPredicates into an Elasticsearch QueryBuilder
+     * Converts a list of ColumnPredicates into an ES-compatible query string.
      */
-    private static QueryBuilder convertColumnPredicatesToES(String column, List<ColumnPredicate> colPreds)
-    {
-        BoolQueryBuilder bool = QueryBuilders.boolQuery();
-        for (ColumnPredicate pred : colPreds) {
-            Object value = pred.getValue();
-            Operator op = pred.getOperator();
+    private static String convertColumnPredicatesToString(String column, List<ColumnPredicate> colPreds) {
+        List<String> parts = new ArrayList<>();
+        for (ColumnPredicate predicate : colPreds) {
+            Object value = predicate.getValue();
+            Operator op = predicate.getOperator();
             switch (op) {
                 case EQUAL:
-                    bool.must(QueryBuilders.termQuery(column, value));
+                    parts.add(column + ":" + value);
                     break;
                 case NOT_EQUAL:
-                    bool.mustNot(QueryBuilders.termQuery(column, value));
+                    parts.add(NOT_OPER + column + ":" + value);
                     break;
                 case GREATER_THAN:
-                    bool.must(QueryBuilders.rangeQuery(column).gt(value));
+                    parts.add(column + ":{" + value + " TO *}");
                     break;
                 case GREATER_THAN_OR_EQUAL_TO:
-                    bool.must(QueryBuilders.rangeQuery(column).gte(value));
+                    parts.add(column + ":[" + value + " TO *]");
                     break;
                 case LESS_THAN:
-                    bool.must(QueryBuilders.rangeQuery(column).lt(value));
+                    parts.add(column + ":{* TO " + value + "}");
                     break;
                 case LESS_THAN_OR_EQUAL_TO:
-                    bool.must(QueryBuilders.rangeQuery(column).lte(value));
+                    parts.add(column + ":[* TO " + value + "]");
                     break;
                 case IS_NULL:
-                    bool.mustNot(QueryBuilders.existsQuery(column));
+                    parts.add(existsPredicate(false, column));
                     break;
                 case IS_NOT_NULL:
-                    bool.must(QueryBuilders.existsQuery(column));
+                    parts.add(existsPredicate(true, column));
                     break;
                 default:
-                    throw new UnsupportedOperationException("Unsupported operator: " + op);
+                    throw new UnsupportedOperationException("Unsupported operator for ES QueryPlan: " + op);
             }
         }
-        return bool.hasClauses() ? bool : null;
+        return parts.isEmpty() ? EMPTY_PREDICATE : Strings.collectionToDelimitedString(parts, AND_OPER);
     }
 }

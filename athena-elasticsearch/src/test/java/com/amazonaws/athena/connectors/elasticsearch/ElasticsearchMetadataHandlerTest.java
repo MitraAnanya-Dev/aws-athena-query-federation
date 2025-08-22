@@ -26,6 +26,7 @@ import com.amazonaws.athena.connector.lambda.data.SchemaBuilder;
 import com.amazonaws.athena.connector.lambda.domain.TableName;
 import com.amazonaws.athena.connector.lambda.domain.predicate.Constraints;
 import com.amazonaws.athena.connector.lambda.metadata.*;
+import com.amazonaws.athena.connector.lambda.metadata.optimizations.OptimizationSubType;
 import com.amazonaws.athena.connector.lambda.security.FederatedIdentity;
 import com.amazonaws.athena.connector.lambda.security.LocalKeyFactory;
 import com.fasterxml.jackson.databind.ObjectMapper;
@@ -58,23 +59,13 @@ import software.amazon.awssdk.services.secretsmanager.model.GetSecretValueReques
 import software.amazon.awssdk.services.secretsmanager.model.GetSecretValueResponse;
 
 import java.io.IOException;
-import java.util.ArrayList;
-import java.util.Collection;
-import java.util.Collections;
-import java.util.HashSet;
-import java.util.Iterator;
-import java.util.LinkedHashMap;
-import java.util.List;
-import java.util.Map;
-import java.util.Set;
+import java.util.*;
 
 import static com.amazonaws.athena.connector.lambda.connection.EnvironmentConstants.DEFAULT_GLUE_CONNECTION;
 import static com.amazonaws.athena.connector.lambda.connection.EnvironmentConstants.SECRET_NAME;
 import static com.amazonaws.athena.connector.lambda.metadata.ListTablesRequest.UNLIMITED_PAGE_SIZE_VALUE;
 import static com.amazonaws.athena.connector.lambda.domain.predicate.Constraints.DEFAULT_NO_LIMIT;
-import static org.junit.Assert.assertEquals;
-import static org.junit.Assert.assertFalse;
-import static org.junit.Assert.assertTrue;
+import static org.junit.Assert.*;
 import static org.mockito.ArgumentMatchers.anyLong;
 import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.ArgumentMatchers.nullable;
@@ -445,7 +436,7 @@ public class ElasticsearchMetadataHandlerTest
         when(domainMapProvider.getDomainMap(null)).thenReturn(ImmutableMap.of(domain, endpoint));
 
         when(mockClient.getShardIds(nullable(String.class), anyLong())).thenReturn(ImmutableSet
-                .of(new Integer(0), new Integer(1), new Integer(2)));
+                .of(Integer.valueOf(0), Integer.valueOf(1), Integer.valueOf(2)));
 
         IndicesClient indices = mock(IndicesClient.class);
         GetIndexResponse mockIndexResponse = mock(GetIndexResponse.class);
@@ -552,5 +543,46 @@ public class ElasticsearchMetadataHandlerTest
                 "spill-bucket", "spill-prefix", new ElasticsearchDomainMapProvider(false), clientFactory, 10, configMap, true);
         assertTrue(elasticsearchMetadataHandler.getDomainMap().containsKey(domainName));
         assertEquals(elasticsearchMetadataHandler.getDomainMap().get(domainName), domain);
+    }
+
+    @Test
+    public void testDoGetDataSourceCapabilities() throws Exception
+    {
+        GetDataSourceCapabilitiesRequest request = new GetDataSourceCapabilitiesRequest(
+                fakeIdentity(), "queryId", "elasticsearch");
+        GetDataSourceCapabilitiesResponse response = handler.doGetDataSourceCapabilities(allocator, request);
+        Map<String, List<OptimizationSubType>> capabilities = response.getCapabilities();
+
+        assertTrue(capabilities.containsKey("supports_limit_pushdown"));
+
+        List<OptimizationSubType> limitTypes =
+                capabilities.get("supports_limit_pushdown");
+
+        boolean containsIntegerConstant = limitTypes.stream()
+                .map(OptimizationSubType::getSubType)
+                .anyMatch("integer_constant"::equals);
+
+        assertTrue(containsIntegerConstant);
+        assertTrue("Should contain complex expression pushdown capability",
+                capabilities.containsKey("supports_complex_expression_pushdown"));
+
+        List<OptimizationSubType> complexTypes =
+                capabilities.get("supports_complex_expression_pushdown");
+
+        assertTrue(!complexTypes.isEmpty());
+
+        OptimizationSubType subType = complexTypes.get(0);
+        List<String> actualFunctions = subType.getProperties();
+
+        assertNotNull("SubType properties (function names) should not be null", actualFunctions);
+
+        List<String> expectedFunctions = Arrays.asList(
+                "$and", "$not", "$or", "$is_null",
+                "$equal", "$greater_than", "$less_than",
+                "$greater_than_or_equal", "$less_than_or_equal", "$not_equal"
+        );
+        for (String expected : expectedFunctions) {
+            assertTrue("Should contain expected function: " + expected, actualFunctions.contains(expected));
+        }
     }
 }
