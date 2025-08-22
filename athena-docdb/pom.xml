@@ -34,6 +34,12 @@
             <artifactId>docdb</artifactId>
             <version>${aws-sdk-v2.version}</version>
             <scope>test</scope>
+            <exclusions>
+                <exclusion>
+                    <groupId>software.amazon.awssdk</groupId>
+                    <artifactId>netty-nio-client</artifactId>
+                </exclusion>
+            </exclusions>
         </dependency>
         <!-- https://mvnrepository.com/artifact/software.amazon.awscdk/docdb -->
         <dependency>

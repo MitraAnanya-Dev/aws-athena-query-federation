@@ -61,6 +61,7 @@ import java.io.InputStream;
 import java.io.OutputStream;
 import java.util.Map;
 
+import static com.amazonaws.athena.connector.lambda.connection.EnvironmentConstants.FAS_TOKEN;
 import static com.amazonaws.athena.connector.lambda.handlers.AthenaExceptionFilter.ATHENA_EXCEPTION_FILTER;
 import static com.amazonaws.athena.connector.lambda.handlers.FederationCapabilities.CAPABILITIES;
 import static com.amazonaws.athena.connector.lambda.handlers.SerDeVersion.SERDE_VERSION;
@@ -78,10 +79,10 @@ public abstract class RecordHandler
     protected final java.util.Map<String, String> configOptions;
     private final S3Client amazonS3;
     private final String sourceType;
-    private final CachableSecretsManager secretsManager;
     private final AthenaClient athena;
     private final ThrottlingInvoker athenaInvoker;
     private final KmsEncryptionProvider kmsEncryptionProvider;
+    private CachableSecretsManager secretsManager;
 
     /**
      * @param sourceType Used to aid in logging diagnostic info when raising a support case.
@@ -131,6 +132,11 @@ public abstract class RecordHandler
         return secretsManager.resolveWithDefaultCredentials(rawString);
     }
 
+    protected CachableSecretsManager getSecretsManager()
+    {
+        return secretsManager;
+    }
+
     protected String getSecret(String secretName)
     {
         return secretsManager.getSecret(secretName);
@@ -173,6 +179,12 @@ public abstract class RecordHandler
         RecordRequestType type = req.getRequestType();
         switch (type) {
             case READ_RECORDS:
+                FederatedIdentity federatedIdentity = req.getIdentity();
+                Map<String, String> connectorRequestOptions = federatedIdentity != null ? federatedIdentity.getConfigOptions() : null;
+                if (connectorRequestOptions != null && connectorRequestOptions.get(FAS_TOKEN) != null) {
+                    AwsRequestOverrideConfiguration awsRequestOverrideConfiguration = getRequestOverrideConfig(connectorRequestOptions);
+                    secretsManager = new CachableSecretsManager(getSecretsManagerClient(awsRequestOverrideConfiguration, SecretsManagerClient.create()));
+                }
                 try (RecordResponse response = doReadRecords(allocator, (ReadRecordsRequest) req)) {
                     logger.info("doHandleRequest: response[{}]", response);
                     assertNotNull(response);

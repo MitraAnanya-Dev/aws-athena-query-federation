@@ -548,6 +548,9 @@ public class ElasticsearchMetadataHandlerTest
     @Test
     public void testDoGetDataSourceCapabilities() throws Exception
     {
+        handler = new ElasticsearchMetadataHandler(awsGlue, new LocalKeyFactory(), awsSecretsManager, amazonAthena,
+                "spill-bucket", "spill-prefix", domainMapProvider, clientFactory, 10,
+                ImmutableMap.of(), false);
         GetDataSourceCapabilitiesRequest request = new GetDataSourceCapabilitiesRequest(
                 fakeIdentity(), "queryId", "elasticsearch");
         GetDataSourceCapabilitiesResponse response = handler.doGetDataSourceCapabilities(allocator, request);

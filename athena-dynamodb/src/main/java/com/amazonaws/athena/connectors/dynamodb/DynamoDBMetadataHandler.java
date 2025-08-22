@@ -208,6 +208,7 @@ public class DynamoDBMetadataHandler
         supportedFunctions.add(StandardFunctions.LESS_THAN_OPERATOR_FUNCTION_NAME);
         supportedFunctions.add(StandardFunctions.GREATER_THAN_OR_EQUAL_OPERATOR_FUNCTION_NAME);
         supportedFunctions.add(StandardFunctions.LESS_THAN_OR_EQUAL_OPERATOR_FUNCTION_NAME);
+
         capabilities.put(DataSourceOptimizations.SUPPORTS_COMPLEX_EXPRESSION_PUSHDOWN.withSupportedSubTypes(
                 ComplexExpressionPushdownSubType.SUPPORTED_FUNCTION_EXPRESSION_TYPES
                         .withSubTypeProperties(supportedFunctions.stream()

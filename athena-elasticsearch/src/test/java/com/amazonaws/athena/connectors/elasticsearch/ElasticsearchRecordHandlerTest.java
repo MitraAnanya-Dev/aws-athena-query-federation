@@ -26,10 +26,7 @@ import com.amazonaws.athena.connector.lambda.data.S3BlockSpillReader;
 import com.amazonaws.athena.connector.lambda.data.SchemaBuilder;
 import com.amazonaws.athena.connector.lambda.domain.Split;
 import com.amazonaws.athena.connector.lambda.domain.TableName;
-import com.amazonaws.athena.connector.lambda.domain.predicate.Constraints;
-import com.amazonaws.athena.connector.lambda.domain.predicate.Range;
-import com.amazonaws.athena.connector.lambda.domain.predicate.SortedRangeSet;
-import com.amazonaws.athena.connector.lambda.domain.predicate.ValueSet;
+import com.amazonaws.athena.connector.lambda.domain.predicate.*;
 import com.amazonaws.athena.connector.lambda.domain.spill.S3SpillLocation;
 import com.amazonaws.athena.connector.lambda.domain.spill.SpillLocation;
 import com.amazonaws.athena.connector.lambda.records.ReadRecordsRequest;
@@ -41,6 +38,7 @@ import com.fasterxml.jackson.databind.ObjectMapper;
 import com.google.common.collect.ImmutableList;
 import com.google.common.collect.ImmutableMap;
 import com.google.common.io.ByteStreams;
+import io.substrait.proto.*;
 import org.apache.arrow.vector.types.Types;
 import org.apache.arrow.vector.types.pojo.Field;
 import org.apache.arrow.vector.types.pojo.FieldType;
@@ -48,6 +46,9 @@ import org.apache.arrow.vector.types.pojo.Schema;
 import org.apache.lucene.search.TotalHits;
 import org.elasticsearch.action.search.SearchRequest;
 import org.elasticsearch.action.search.SearchResponse;
+import org.elasticsearch.action.search.SearchResponseSections;
+import org.elasticsearch.action.search.SearchScrollRequest;
+import org.elasticsearch.client.RequestOptions;
 import org.elasticsearch.search.SearchHit;
 import org.elasticsearch.search.SearchHits;
 import org.junit.After;
@@ -74,12 +75,8 @@ import software.amazon.awssdk.services.s3.model.PutObjectResponse;
 import java.io.ByteArrayInputStream;
 import java.io.IOException;
 import java.io.InputStream;
-import java.util.ArrayList;
-import java.util.Collections;
-import java.util.HashMap;
-import java.util.List;
-import java.util.Map;
-import java.util.UUID;
+import java.util.*;
+import java.util.stream.IntStream;
 
 import static com.amazonaws.athena.connector.lambda.domain.predicate.Constraints.DEFAULT_NO_LIMIT;
 import static org.junit.Assert.assertEquals;
@@ -445,6 +442,193 @@ public class ElasticsearchRecordHandlerTest
         }
 
         logger.info("doReadRecordsSpill: exit");
+    }
+
+    @Test
+    public void testReadWithLimitFromQueryPlan() throws Exception
+    {
+        // SELECT * FROM test_table LIMIT 5
+        QueryPlan queryPlan = getQueryPlan(buildBase64SubstraitPlan(5, false));
+        // Prepare docs > limit
+        List<Map<String, Object>> docs = new ArrayList<>();
+        for (int i = 0; i < 10; i++) {
+            Map<String, Object> doc = new HashMap<>();
+            doc.put("col0", i);
+            doc.put("col1", "val" + i);
+            docs.add(doc);
+        }
+        // Mock search response
+        SearchResponse mockResponse = mockSearchResponse(docs);
+        when(mockClient.search(any(SearchRequest.class), any(RequestOptions.class)))
+                .thenReturn(mockResponse);
+        Constraints constraints = new Constraints(
+                Collections.emptyMap(),
+                Collections.emptyList(),
+                Collections.emptyList(),
+                DEFAULT_NO_LIMIT,
+                Collections.emptyMap(),
+                queryPlan
+        );
+        ReadRecordsRequest request = new ReadRecordsRequest(fakeIdentity(),
+                "elasticsearch",
+                "queryId-" + System.currentTimeMillis(),
+                new TableName("movies", "mishmash"),
+                mapping,
+                split,
+                constraints,
+                100_000_000_000L,
+                100_000_000_000L
+        );
+        RecordResponse rawResponse = handler.doReadRecords(allocator, request);
+        assertTrue(rawResponse instanceof ReadRecordsResponse);
+        ReadRecordsResponse response = (ReadRecordsResponse) rawResponse;
+        assertEquals(5, response.getRecords().getRowCount());
+    }
+
+    @Test
+    public void testReadWithLimitAndOrderByFromQueryPlan() throws Exception
+    {
+        // SELECT * FROM test_table ORDER BY col0 LIMIT 3
+        QueryPlan queryPlan = getQueryPlan(buildBase64SubstraitPlan(3, true, 0));
+        List<Map<String, Object>> docs = new ArrayList<>();
+        for (int i = 0; i < 10; i++) {
+            Map<String, Object> doc = new HashMap<>();
+            doc.put("col0", i);
+            doc.put("col1", "val" + i);
+            docs.add(doc);
+        }
+        SearchResponse mockResponse = mockSearchResponse(docs);
+        when(mockClient.search(any(SearchRequest.class), any(RequestOptions.class)))
+                .thenReturn(mockResponse);
+        Constraints constraints = new Constraints(
+                Collections.emptyMap(),
+                Collections.emptyList(),
+                Collections.emptyList(),
+                DEFAULT_NO_LIMIT,
+                Collections.emptyMap(),
+                queryPlan
+        );
+        ReadRecordsRequest request = new ReadRecordsRequest(fakeIdentity(),
+                "elasticsearch",
+                "queryId-" + System.currentTimeMillis(),
+                new TableName("movies", "mishmash"),
+                mapping,
+                split,
+                constraints,
+                100_000_000_000L,
+                100_000_000_000L
+        );
+        RecordResponse rawResponse = handler.doReadRecords(allocator, request);
+        assertTrue(rawResponse instanceof ReadRecordsResponse);
+        ReadRecordsResponse response = (ReadRecordsResponse) rawResponse;
+        // Limit not applicable if order by present
+        assertEquals(10, response.getRecords().getRowCount());
+    }
+
+    @Test
+    public void testReadWithLimitFromConstraintsOnly() throws Exception
+    {
+        int limitValue = 4;
+        List<Map<String, Object>> docs = new ArrayList<>();
+        for (int i = 0; i < 10; i++) {
+            Map<String, Object> doc = new HashMap<>();
+            doc.put("col0", i);
+            doc.put("col1", "val" + i);
+            docs.add(doc);
+        }
+        SearchResponse mockResponse = mockSearchResponse(docs);
+        when(mockClient.search(any(SearchRequest.class), any(RequestOptions.class)))
+                .thenReturn(mockResponse);
+        Constraints constraints = new Constraints(
+                Collections.emptyMap(),
+                Collections.emptyList(),
+                Collections.emptyList(),
+                limitValue, // limit from constraints
+                Collections.emptyMap(),
+                null
+        );
+        ReadRecordsRequest request = new ReadRecordsRequest(fakeIdentity(),
+                "elasticsearch",
+                "queryId-" + System.currentTimeMillis(),
+                new TableName("movies", "mishmash"),
+                mapping,
+                split,
+                constraints,
+                100_000_000_000L,
+                100_000_000_000L
+        );
+        RecordResponse rawResponse = handler.doReadRecords(allocator, request);
+        assertTrue(rawResponse instanceof ReadRecordsResponse);
+        ReadRecordsResponse response = (ReadRecordsResponse) rawResponse;
+        assertEquals(limitValue, response.getRecords().getRowCount());
+    }
+
+    private String buildBase64SubstraitPlan(int limit, boolean withOrderBy, int... sortFieldIndexes)
+    {
+        Rel inputRel = Rel.newBuilder()
+                .setRead(ReadRel.newBuilder().build()) // base scan placeholder
+                .build();
+        if (withOrderBy && sortFieldIndexes != null && sortFieldIndexes.length > 0) {
+            SortRel.Builder sortBuilder = SortRel.newBuilder();
+            for (int idx : sortFieldIndexes) {
+                SortField sortField = SortField.newBuilder()
+                        .setExpr(createFieldReference(idx))
+                        .setDirection(SortField.SortDirection.SORT_DIRECTION_ASC_NULLS_FIRST)
+                        .build();
+                sortBuilder.addSorts(sortField);
+            }
+            sortBuilder.setInput(inputRel);
+            inputRel = Rel.newBuilder().setSort(sortBuilder.build()).build();
+        }
+        // Wrap input inside FetchRel for LIMIT
+        FetchRel fetchRel = FetchRel.newBuilder()
+                .setInput(inputRel)
+                .setCount(limit)
+                .build();
+        RelRoot relRoot = RelRoot.newBuilder()
+                .setInput(Rel.newBuilder().setFetch(fetchRel).build())
+                .build();
+        PlanRel planRel = PlanRel.newBuilder()
+                .setRoot(relRoot)
+                .build();
+        Plan plan = Plan.newBuilder()
+                .addRelations(planRel)
+                .build();
+        return Base64.getEncoder().encodeToString(plan.toByteArray());
+    }
+
+    private Expression createFieldReference(int fieldIndex)
+    {
+        return Expression.newBuilder()
+                .setSelection(Expression.FieldReference.newBuilder()
+                        .setDirectReference(Expression.ReferenceSegment.newBuilder()
+                                .setStructField(Expression.ReferenceSegment.StructField.newBuilder()
+                                        .setField(fieldIndex)
+                                        .build())
+                                .build())
+                        .build())
+                .build();
+    }
+
+    private QueryPlan getQueryPlan(String base64Plan)
+    {
+        return new QueryPlan("", base64Plan);
+    }
+
+    private SearchResponse mockSearchResponse(List<Map<String, Object>> docs) {
+        SearchHit[] hits = new SearchHit[docs.size()];
+        int i = 0;
+        for (Map<String, Object> doc : docs) {
+            SearchHit hit = mock(SearchHit.class);
+            when(hit.getSourceAsMap()).thenReturn(doc);
+            hits[i++] = hit;
+        }
+        SearchHits searchHits = new SearchHits(hits, new TotalHits(docs.size(), TotalHits.Relation.EQUAL_TO), 1.0f);
+        SearchResponseSections sections = new SearchResponseSections(
+                searchHits, null, null, false, null, null, 1);
+        SearchResponse response = mock(SearchResponse.class);
+        when(response.getHits()).thenReturn(searchHits);
+        return response;
     }
 
     private class ByteHolder
