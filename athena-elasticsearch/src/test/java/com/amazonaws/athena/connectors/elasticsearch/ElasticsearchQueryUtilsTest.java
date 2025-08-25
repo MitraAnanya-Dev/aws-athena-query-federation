@@ -21,9 +21,17 @@ package com.amazonaws.athena.connectors.elasticsearch;
 
 import com.amazonaws.athena.connector.lambda.data.BlockAllocatorImpl;
 import com.amazonaws.athena.connector.lambda.data.SchemaBuilder;
-import com.amazonaws.athena.connector.lambda.domain.predicate.*;
+import com.amazonaws.athena.connector.lambda.domain.predicate.AllOrNoneValueSet;
+import com.amazonaws.athena.connector.lambda.domain.predicate.Constraints;
+import com.amazonaws.athena.connector.lambda.domain.predicate.EquatableValueSet;
+import com.amazonaws.athena.connector.lambda.domain.predicate.Range;
+import com.amazonaws.athena.connector.lambda.domain.predicate.SortedRangeSet;
+import com.amazonaws.athena.connector.lambda.domain.predicate.ValueSet;
+import com.amazonaws.athena.connector.substrait.model.ColumnPredicate;
+import com.amazonaws.athena.connector.substrait.model.Operator;
 import com.google.common.collect.ImmutableList;
 import com.google.common.collect.ImmutableMap;
+import io.substrait.proto.Plan;
 import org.apache.arrow.vector.types.Types;
 import org.apache.arrow.vector.types.pojo.Field;
 import org.apache.arrow.vector.types.pojo.FieldType;
@@ -33,18 +41,27 @@ import org.elasticsearch.search.fetch.subphase.FetchSourceContext;
 import org.junit.Before;
 import org.junit.Test;
 import org.junit.runner.RunWith;
+import org.junit.jupiter.params.ParameterizedTest;
+import org.junit.jupiter.params.provider.Arguments;
+import org.junit.jupiter.params.provider.MethodSource;
 import org.mockito.junit.MockitoJUnitRunner;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
 import java.util.ArrayList;
+import java.util.Arrays;
 import java.util.Collections;
 import java.util.HashMap;
+import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.stream.Stream;
 
 import static org.junit.Assert.assertEquals;
 import static com.amazonaws.athena.connector.lambda.domain.predicate.Constraints.DEFAULT_NO_LIMIT;
+import static org.junit.Assert.assertTrue;
+import static org.mockito.Mockito.mock;
+import static org.mockito.Mockito.when;
 
 /**
  * This class is used to test the ElasticsearchQueryUtils class.
@@ -215,4 +232,98 @@ public class ElasticsearchQueryUtilsTest
 
         logger.info("getNoneValuePredicate - exit");
     }
+
+    @Test
+    public void testBuildFilterPredicatesFromPlan_withNullPlan()
+    {
+        Map<String, List<ColumnPredicate>> result =
+                ElasticsearchQueryUtils.buildFilterPredicatesFromPlan(null);
+        assertTrue(result.isEmpty());
+    }
+
+    @Test
+    public void testBuildFilterPredicatesFromPlan_withNoRelations()
+    {
+        Plan emptyPlan = Plan.newBuilder().build();
+        Map<String, List<ColumnPredicate>> result =
+                ElasticsearchQueryUtils.buildFilterPredicatesFromPlan(emptyPlan);
+        assertTrue(result.isEmpty());
+    }
+
+    @ParameterizedTest()
+    @MethodSource("getInputTestMakeQueryFromPlanForDifferentOperator")
+    public void testMakeQueryFromPlanForDifferentOperator(Operator op, Object value, String expected)
+    {
+        Map<String, List<ColumnPredicate>> preds =
+                oneColumn("col", mockPredicates(op, value));
+        QueryBuilder queryBuilder = ElasticsearchQueryUtils.makeQueryFromPlan(preds);
+        assertEquals(expected, queryBuilder.queryName());
+    }
+
+    @ParameterizedTest(name = "{0}")
+    @MethodSource("getInputTestMakeQueryFromPlanWithMultiPredicates")
+    public void testMakeQueryFromPlanWithMultiPredicates(String description,
+                                                      Map<String, List<ColumnPredicate>> preds,
+                                                      String expectedQuery)
+    {
+        QueryBuilder qb = ElasticsearchQueryUtils.makeQueryFromPlan(preds);
+        assertEquals(expectedQuery, qb.queryName());
+    }
+
+    private static Stream<Arguments> getInputTestMakeQueryFromPlanWithMultiPredicates()
+    {
+        return Stream.of(
+                // Case 1: Same column, multiple predicates
+                Arguments.of(
+                        "same column ANDed in order",
+                        new LinkedHashMap<String, List<ColumnPredicate>>() {{
+                            put("age", Arrays.asList(
+                                    mockPredicates(Operator.GREATER_THAN_OR_EQUAL_TO, 18),
+                                    mockPredicates(Operator.LESS_THAN, 65)
+                            ));
+                        }},
+                        "age:[18 TO *] AND age:{* TO 65}"
+                ),
+                // Case 2: Multiple columns ANDed in insertion order
+                Arguments.of(
+                        "multiple columns ANDed in insertion order",
+                        new LinkedHashMap<String, List<ColumnPredicate>>() {{
+                            put("active", Collections.singletonList(mockPredicates(Operator.EQUAL, true)));
+                            put("email", Collections.singletonList(mockPredicates(Operator.IS_NOT_NULL, null)));
+                        }},
+                        "active:true AND (_exists_:email)"
+                )
+        );
+    }
+
+    private static Stream<Arguments> getInputTestMakeQueryFromPlanForDifferentOperator()
+    {
+        return Stream.of(
+                Arguments.of(Operator.EQUAL, 42, "col:42"),
+                Arguments.of(Operator.NOT_EQUAL, 100, "NOT col:100"),
+                Arguments.of(Operator.GREATER_THAN, 50, "col:{50 TO *}"),
+                Arguments.of(Operator.GREATER_THAN_OR_EQUAL_TO, 1970, "col:[1970 TO *]"),
+                Arguments.of(Operator.LESS_THAN, 25, "col:{* TO 25}"),
+                Arguments.of(Operator.LESS_THAN_OR_EQUAL_TO, 30, "col:[* TO 30]"),
+                Arguments.of(Operator.EQUAL, "open", "col:open"),
+                Arguments.of(Operator.IS_NULL, null, "(NOT _exists_:col)"),
+                Arguments.of(Operator.IS_NOT_NULL, null, "(_exists_:col)")
+        );
+    }
+
+    private static Map<String, List<ColumnPredicate>> oneColumn(String col, ColumnPredicate... cps)
+    {
+        Map<String, List<ColumnPredicate>> m = new LinkedHashMap<>();
+        m.put(col, Arrays.asList(cps));
+        return m;
+    }
+
+    private static ColumnPredicate mockPredicates(Operator op, Object value)
+    {
+        ColumnPredicate p = mock(ColumnPredicate.class);
+        when(p.getOperator()).thenReturn(op);
+        when(p.getValue()).thenReturn(value);
+        return p;
+    }
+
 }
