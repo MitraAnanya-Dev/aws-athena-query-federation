@@ -38,7 +38,15 @@ import com.fasterxml.jackson.databind.ObjectMapper;
 import com.google.common.collect.ImmutableList;
 import com.google.common.collect.ImmutableMap;
 import com.google.common.io.ByteStreams;
-import io.substrait.proto.*;
+import io.substrait.proto.Expression;
+import io.substrait.proto.FetchRel;
+import io.substrait.proto.Plan;
+import io.substrait.proto.PlanRel;
+import io.substrait.proto.ReadRel;
+import io.substrait.proto.Rel;
+import io.substrait.proto.RelRoot;
+import io.substrait.proto.SortField;
+import io.substrait.proto.SortRel;
 import org.apache.arrow.vector.types.Types;
 import org.apache.arrow.vector.types.pojo.Field;
 import org.apache.arrow.vector.types.pojo.FieldType;
@@ -46,8 +54,6 @@ import org.apache.arrow.vector.types.pojo.Schema;
 import org.apache.lucene.search.TotalHits;
 import org.elasticsearch.action.search.SearchRequest;
 import org.elasticsearch.action.search.SearchResponse;
-import org.elasticsearch.action.search.SearchResponseSections;
-import org.elasticsearch.action.search.SearchScrollRequest;
 import org.elasticsearch.client.RequestOptions;
 import org.elasticsearch.search.SearchHit;
 import org.elasticsearch.search.SearchHits;
@@ -75,13 +81,17 @@ import software.amazon.awssdk.services.s3.model.PutObjectResponse;
 import java.io.ByteArrayInputStream;
 import java.io.IOException;
 import java.io.InputStream;
-import java.util.*;
-import java.util.stream.IntStream;
+import java.util.ArrayList;
+import java.util.Base64;
+import java.util.Collections;
+import java.util.HashMap;
+import java.util.List;
+import java.util.Map;
+import java.util.UUID;
 
 import static com.amazonaws.athena.connector.lambda.domain.predicate.Constraints.DEFAULT_NO_LIMIT;
 import static org.junit.Assert.assertEquals;
 import static org.junit.Assert.assertTrue;
-import static org.junit.Assert.assertNotNull;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.nullable;
 import static org.mockito.Mockito.mock;
@@ -620,12 +630,15 @@ public class ElasticsearchRecordHandlerTest
         int i = 0;
         for (Map<String, Object> doc : docs) {
             SearchHit hit = mock(SearchHit.class);
-            when(hit.getSourceAsMap()).thenReturn(doc);
+            // Only stub what's actually used
+            when(mockClient.getDocument(hit)).thenReturn(doc);
             hits[i++] = hit;
         }
-        SearchHits searchHits = new SearchHits(hits, new TotalHits(docs.size(), TotalHits.Relation.EQUAL_TO), 1.0f);
-        SearchResponseSections sections = new SearchResponseSections(
-                searchHits, null, null, false, null, null, 1);
+        SearchHits searchHits = new SearchHits(
+                hits,
+                new TotalHits(docs.size(), TotalHits.Relation.EQUAL_TO),
+                1.0f
+        );
         SearchResponse response = mock(SearchResponse.class);
         when(response.getHits()).thenReturn(searchHits);
         return response;
