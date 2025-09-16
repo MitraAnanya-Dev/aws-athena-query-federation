@@ -22,11 +22,7 @@ package com.amazonaws.athena.connector.lambda.handlers;
 
 import com.amazonaws.athena.connector.lambda.QueryStatusChecker;
 import com.amazonaws.athena.connector.lambda.ThrottlingInvoker;
-import com.amazonaws.athena.connector.lambda.data.BlockAllocator;
-import com.amazonaws.athena.connector.lambda.data.BlockAllocatorImpl;
-import com.amazonaws.athena.connector.lambda.data.BlockSpiller;
-import com.amazonaws.athena.connector.lambda.data.S3BlockSpiller;
-import com.amazonaws.athena.connector.lambda.data.SpillConfig;
+import com.amazonaws.athena.connector.lambda.data.*;
 import com.amazonaws.athena.connector.lambda.domain.predicate.ConstraintEvaluator;
 import com.amazonaws.athena.connector.lambda.exceptions.AthenaConnectorException;
 import com.amazonaws.athena.connector.lambda.records.ReadRecordsRequest;
@@ -59,6 +55,7 @@ import software.amazon.awssdk.services.secretsmanager.SecretsManagerClient;
 import java.io.IOException;
 import java.io.InputStream;
 import java.io.OutputStream;
+import java.util.Arrays;
 import java.util.Map;
 
 import static com.amazonaws.athena.connector.lambda.handlers.AthenaExceptionFilter.ATHENA_EXCEPTION_FILTER;
@@ -199,10 +196,14 @@ public abstract class RecordHandler
     public RecordResponse doReadRecords(BlockAllocator allocator, ReadRecordsRequest request)
             throws Exception
     {
-        logger.info("doReadRecords: {}:{}", request.getSchema(), request.getSplit().getSpillLocation());
+        System.out.println("doReadRecords: schema :: spillLoc " + request.getSchema() + " " + request.getSplit().getSpillLocation());
+        System.out.println("doReadRecords: ReadRecordsRequest " + request.toString());
         FederatedIdentity federatedIdentity = request.getIdentity();
         AwsRequestOverrideConfiguration overrideConfig = getRequestOverrideConfig(federatedIdentity.getConfigOptions());
         SpillConfig spillConfig = getSpillConfig(request);
+        System.out.println("spillConfig getMaxBlockBytes: " + spillConfig.getMaxBlockBytes());
+        System.out.println("spillConfig getMaxInlineBlockSize: " + spillConfig.getMaxInlineBlockSize());
+        System.out.println("spillConfig getSpillLocation: " + spillConfig.getSpillLocation().toString());
         AthenaClient athenaClient = getAthenaClient(overrideConfig, athena);
         S3Client s3Client = getS3Client(overrideConfig, amazonS3);
         try (ConstraintEvaluator evaluator = new ConstraintEvaluator(allocator,
@@ -211,16 +212,28 @@ public abstract class RecordHandler
                 S3BlockSpiller spiller = new S3BlockSpiller(s3Client, spillConfig, allocator, request.getSchema(), evaluator, configOptions);
                 QueryStatusChecker queryStatusChecker = new QueryStatusChecker(athenaClient, athenaInvoker, request.getQueryId())
         ) {
+            System.out.println("queryStatusChecker isQueryRunning: " + queryStatusChecker.isQueryRunning() +
+                    " Invoking readWithConstraint.");
             readWithConstraint(spiller, request, queryStatusChecker);
 
             if (!spiller.spilled()) {
-                return new ReadRecordsResponse(request.getCatalogName(), spiller.getBlock());
+                System.out.println("spiller has not spilled. Returning ReadRecordResponse.");
+                ReadRecordsResponse rrs = new ReadRecordsResponse(request.getCatalogName(), spiller.getBlock());
+                System.out.println("record count: " + rrs.getRecordCount());
+                for (int i = 0; i <= rrs.getRecordCount(); i++) {
+                    System.out.println("doReadRecordsNoSpill: " + BlockUtils.rowToString(rrs.getRecords(), i));
+                }
+                return rrs;
             }
             else {
-                return new RemoteReadRecordsResponse(request.getCatalogName(),
+                System.out.println("spiller has spilled. Returning RemoteReadRecordResponse.");
+                RemoteReadRecordsResponse rrrs = new RemoteReadRecordsResponse(request.getCatalogName(),
                         request.getSchema(),
                         spiller.getSpillLocations(),
                         spillConfig.getEncryptionKey());
+                System.out.println("block count: " + rrrs.getNumberBlocks());
+                System.out.println("remote blocks: " + Arrays.toString(rrrs.getRemoteBlocks().toArray()));
+                return rrrs;
             }
         }
     }

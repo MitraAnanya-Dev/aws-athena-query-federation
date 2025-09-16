@@ -54,6 +54,7 @@ public class SimpleBlockWriter
         int rows;
         try {
             rows = rowWriter.writeRows(block, rowCount);
+            System.out.println("wrote rows: rowCount:: rows: " + rowCount + rows);
         }
         catch (Exception ex) {
             throw (ex instanceof RuntimeException) ? (RuntimeException) ex : new RuntimeException(ex);

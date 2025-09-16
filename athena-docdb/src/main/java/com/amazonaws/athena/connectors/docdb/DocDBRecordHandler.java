@@ -148,7 +148,7 @@ public class DocDBRecordHandler
         String tableName = recordsRequest.getSchema().getCustomMetadata().getOrDefault(
             SOURCE_TABLE_PROPERTY, tableNameObj.getTableName());
 
-        logger.info("Resolved tableName to: {}", tableName);
+        System.out.println("Resolved tableName to: " + tableName);
         Map<String, ValueSet> constraintSummary = recordsRequest.getConstraints().getSummary();
 
         MongoClient client = getOrCreateConn(recordsRequest.getSplit());
@@ -167,53 +167,81 @@ public class DocDBRecordHandler
         Pair<Boolean, Integer> limitPair = getLimit(plan, recordsRequest.getConstraints());
         boolean hasLimit = limitPair.getLeft();
         int limit = limitPair.getRight();
-
+        System.out.println("readWithConstraints: limit: " + limit);
         if (recordsRequest.getConstraints().isQueryPassThrough()) {
+            System.out.println("readWithConstraints: isQueryPassThrough");
             Map<String, String> qptArguments = recordsRequest.getConstraints().getQueryPassthroughArguments();
+            System.out.println("readWithConstraints: qptArguments: " + qptArguments);
             queryPassthrough.verify(qptArguments);
             db = client.getDatabase(qptArguments.get(DocDBQueryPassthrough.DATABASE));
             table = db.getCollection(qptArguments.get(DocDBQueryPassthrough.COLLECTION));
             query = QueryUtils.parseFilter(qptArguments.get(DocDBQueryPassthrough.FILTER));
+            System.out.println("readWithConstraints: QPT query: " + query);
         }
         else {
             db =  client.getDatabase(schemaName);
             table = db.getCollection(tableName);
             Map<String, List<ColumnPredicate>> columnPredicateMap = QueryUtils.buildFilterPredicatesFromPlan(plan);
             if (!columnPredicateMap.isEmpty()) {
+                // -------------------
+                for (Map.Entry<String, List<ColumnPredicate>> entry : columnPredicateMap.entrySet()) {
+                    String columnName = entry.getKey();
+                    List<ColumnPredicate> predicates = entry.getValue();
+                    System.out.println("Column: " + columnName);
+                    if (predicates.isEmpty()) {
+                        System.out.println("  No predicates");
+                    }
+                    else {
+                        for (ColumnPredicate pred : predicates) {
+                            // Assuming ColumnPredicate has a meaningful toString()
+                            System.out.println("  - Predicate: " + pred.toString());
+                        }
+                    }
+                    System.out.println();
+                }
+                // ---------
                 query = QueryUtils.makeQueryFromPlan(columnPredicateMap);
+                System.out.println("made query with plan: " + query.toJson());
             }
             else {
                 query = QueryUtils.makeQuery(recordsRequest.getSchema(), recordsRequest.getConstraints().getSummary());
+                System.out.println("made query without plan: " + query.toJson());
             }
         }
 
         String disableProjectionAndCasingEnvValue = configOptions.getOrDefault(DISABLE_PROJECTION_AND_CASING_ENV, "false").toLowerCase();
         boolean disableProjectionAndCasing = disableProjectionAndCasingEnvValue.equals("true");
-        logger.info("{} environment variable set to: {}. Resolved to: {}",
-            DISABLE_PROJECTION_AND_CASING_ENV, disableProjectionAndCasingEnvValue, disableProjectionAndCasing);
+        System.out.println(DISABLE_PROJECTION_AND_CASING_ENV + " environment variable set to: " + disableProjectionAndCasingEnvValue +
+                        " Resolved to: " + disableProjectionAndCasing);
 
         // TODO: Currently AWS DocumentDB does not support collation, which is required for case insensitive indexes:
         // https://www.mongodb.com/docs/manual/core/index-case-insensitive/
         // Once AWS DocumentDB supports collation, then projections do not have to be disabled anymore because case
         // insensitive indexes allows for case insensitive projections.
         Document projection = disableProjectionAndCasing ? null : QueryUtils.makeProjection(recordsRequest.getSchema());
-        logger.info("readWithConstraint: query[{}] projection[{}]", query, projection);
+        System.out.println("readWithConstraint: query " + query + " projection " + projection);
 
         final MongoCursor<Document> iterable = table
                 .find(query)
                 .projection(projection)
                 .batchSize(MONGO_QUERY_BATCH_SIZE).iterator();
-
+        System.out.println("MongoCursor iterable created: " + (iterable != null));
         long numRows = 0;
         AtomicLong numResultRows = new AtomicLong(0);
+        System.out.println("Has next doc: " + iterable.hasNext());
+        System.out.println("Query running: " + queryStatusChecker.isQueryRunning() + " " + iterable.toString());
         while (iterable.hasNext() && queryStatusChecker.isQueryRunning()) {
+            System.out.println("in loop: Has next doc: " + iterable.hasNext() + " " + iterable.toString());
+            System.out.println("in loop: Query running: " + queryStatusChecker.isQueryRunning());
             if (hasLimit && numRows >= limit) {
-                logger.info("Reached limit of {} rows, exiting document iteration.", numRows);
+                System.out.println("Reached limit of " + numRows + " rows, exiting document iteration. Limit: " + limit);
                 break;
             }
             numRows++;
+            System.out.println("Processing row #" + numRows);
             spiller.writeRows((Block block, int rowNum) -> {
                 Map<String, Object> doc = documentAsMap(iterable.next(), disableProjectionAndCasing);
+                System.out.println("documentAsMap: " + doc);
                 boolean matched = true;
                 for (Field nextField : recordsRequest.getSchema().getFields()) {
                     Object value = TypeUtils.coerce(nextField, doc.get(nextField.getName()));
@@ -238,11 +266,12 @@ public class DocDBRecordHandler
                 }
 
                 numResultRows.getAndIncrement();
+                System.out.println("numResultRows: " + numResultRows);
                 return 1;
             });
         }
 
-        logger.info("readWithConstraint: numRows[{}] numResultRows[{}]", numRows, numResultRows.get());
+        System.out.println("readWithConstraint: numRows: " + numRows + " numResultRows " + numResultRows.get());
     }
 
     Pair<Boolean, Integer> getLimit(Plan plan, Constraints constraints)
