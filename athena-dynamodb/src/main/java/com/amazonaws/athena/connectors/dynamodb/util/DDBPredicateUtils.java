@@ -29,7 +29,6 @@ import com.amazonaws.athena.connector.substrait.SubstraitFunctionParser;
 import com.amazonaws.athena.connector.substrait.SubstraitMetadataParser;
 import com.amazonaws.athena.connector.substrait.model.ColumnPredicate;
 import com.amazonaws.athena.connector.substrait.model.SubstraitOperator;
-import com.amazonaws.athena.connector.substrait.model.Operator;
 import com.amazonaws.athena.connector.substrait.model.SubstraitRelModel;
 import com.amazonaws.athena.connectors.dynamodb.model.DynamoDBIndex;
 import com.amazonaws.athena.connectors.dynamodb.model.DynamoDBTable;
@@ -149,7 +148,7 @@ public class DDBPredicateUtils
 
     /**
      * Builds filter predicates from a Substrait execution plan.
-     *
+     * 
      * @param plan the Substrait plan containing filter conditions
      * @return map of column names to their predicates
      */
@@ -158,19 +157,19 @@ public class DDBPredicateUtils
         if (plan == null || plan.getRelationsList().isEmpty()) {
             return new HashMap<>();
         }
-
+        
         SubstraitRelModel substraitRelModel = extractSubstraitRelModel(plan);
         if (substraitRelModel.getFilterRel() == null) {
             return new HashMap<>();
         }
-
+        
         List<SimpleExtensionDeclaration> extensionDeclarations = plan.getExtensionsList();
         List<String> tableColumns = SubstraitMetadataParser.getTableColumns(substraitRelModel);
-
+        
         return SubstraitFunctionParser.getColumnPredicatesMap(
             extensionDeclarations, substraitRelModel.getFilterRel().getCondition(), tableColumns);
     }
-
+    
     /**
      * Extracts the Substrait relation model from the plan.
      */
@@ -524,11 +523,11 @@ public class DDBPredicateUtils
         // Add table keys (always projected)
         indexColumns.add(table.getHashKey());
         table.getRangeKey().ifPresent(indexColumns::add);
-
+        
         // Add index keys
         indexColumns.add(index.getHashKey());
         index.getRangeKey().ifPresent(indexColumns::add);
-
+        
         // Add projection-specific columns
         if (index.getProjectionType() == ProjectionType.INCLUDE) {
             indexColumns.addAll(index.getProjectionAttributeNames());
@@ -603,7 +602,7 @@ public class DDBPredicateUtils
         }
         return null;
     }
-
+    
     /**
      * Handles null check predicates (IS_NULL, IS_NOT_NULL).
      */
@@ -613,16 +612,16 @@ public class DDBPredicateUtils
     {
         SubstraitOperator substraitOperator = predicate.getOperator();
         if (substraitOperator == SubstraitOperator.IS_NOT_NULL) {
-            return "(attribute_exists(" + columnName + ") AND " +
+            return "(attribute_exists(" + columnName + ") AND " + 
                    toPredicate(originalColumnName, "=", null, accumulator, valueNameProducer.getNext(), recordMetadata) + ")";
         }
         if (substraitOperator == SubstraitOperator.IS_NULL) {
-            return "(attribute_not_exists(" + columnName + ") OR " +
+            return "(attribute_not_exists(" + columnName + ") OR " + 
                    toPredicate(originalColumnName, "<>", null, accumulator, valueNameProducer.getNext(), recordMetadata) + ")";
         }
         return null;
     }
-
+    
     /**
      * Builds equality filter expressions (=, !=, IN, NOT IN).
      */
@@ -634,9 +633,9 @@ public class DDBPredicateUtils
         List<Object> singleValues = predicates.stream()
                 .map(ColumnPredicate::getValue)
                 .collect(Collectors.toList());
-
+        
         if (singleValues.size() == 1) {
-            return toPredicate(originalColumnName, isAllowlist ? "=" : "<>",
+            return toPredicate(originalColumnName, isAllowlist ? "=" : "<>", 
                              getOnlyElement(singleValues), accumulator, valueNameProducer.getNext(), recordMetadata);
         }
         else if (singleValues.size() > 1) {
@@ -649,7 +648,7 @@ public class DDBPredicateUtils
         }
         return null;
     }
-
+    
     /**
      * Builds range filter expressions (>, >=, <, <=, BETWEEN).
      */
@@ -658,7 +657,7 @@ public class DDBPredicateUtils
                                          DDBRecordMetadata recordMetadata, boolean columnIsSortKey)
     {
         List<String> rangeConjuncts = new ArrayList<>();
-
+        
         if (hasStrictIncludeRange(predicates)) {
             Pair<ColumnPredicate, ColumnPredicate> rangePredicates = getIncludedRangeBounds(predicates);
             String startBetweenPredicate = toPredicate(originalColumnName, "BETWEEN",
@@ -671,14 +670,14 @@ public class DDBPredicateUtils
         else {
             addUpperBoundCondition(originalColumnName, predicates, accumulator, valueNameProducer, recordMetadata, rangeConjuncts);
             boolean upperBoundAdded = !rangeConjuncts.isEmpty();
-            addLowerBoundCondition(originalColumnName, predicates, accumulator, valueNameProducer, recordMetadata,
+            addLowerBoundCondition(originalColumnName, predicates, accumulator, valueNameProducer, recordMetadata, 
                                  rangeConjuncts, columnIsSortKey, upperBoundAdded);
         }
-
+        
         checkState(!rangeConjuncts.isEmpty());
         return "(" + AND_JOINER.join(rangeConjuncts) + ")";
     }
-
+    
     /**
      * Formats disjuncts into final filter expression.
      */
@@ -693,7 +692,7 @@ public class DDBPredicateUtils
         }
         return "(" + OR_JOINER.join(disjuncts) + ")";
     }
-
+    
     /**
      * Adds upper bound conditions to range conjuncts.
      */
@@ -704,21 +703,21 @@ public class DDBPredicateUtils
         Predicate<ColumnPredicate> isLessThanPredicate = predicate ->
                 (predicate.getOperator() == SubstraitOperator.LESS_THAN || predicate.getOperator() == SubstraitOperator.LESS_THAN_OR_EQUAL_TO);
         ColumnPredicate upperBoundPredicate = getColumnPredicate(predicates, isLessThanPredicate);
-
+        
         if (upperBoundPredicate != null) {
             switch (upperBoundPredicate.getOperator()) {
                 case LESS_THAN_OR_EQUAL_TO:
-                    rangeConjuncts.add(toPredicate(originalColumnName, "<=", upperBoundPredicate.getValue(),
+                    rangeConjuncts.add(toPredicate(originalColumnName, "<=", upperBoundPredicate.getValue(), 
                                                  accumulator, valueNameProducer.getNext(), recordMetadata));
                     break;
                 case LESS_THAN:
-                    rangeConjuncts.add(toPredicate(originalColumnName, "<", upperBoundPredicate.getValue(),
+                    rangeConjuncts.add(toPredicate(originalColumnName, "<", upperBoundPredicate.getValue(), 
                                                  accumulator, valueNameProducer.getNext(), recordMetadata));
                     break;
             }
         }
     }
-
+    
     /**
      * Adds lower bound conditions to range conjuncts.
      */
@@ -730,23 +729,23 @@ public class DDBPredicateUtils
         // We can always add the lower bound if the column is not a sort key.
         // But if it is a sort key, then we can only add it if we have not already added the upper bound.
         boolean canAddLowerBound = (!columnIsSortKey || !upperBoundAdded);
-
+        
         if (!canAddLowerBound) {
             return;
         }
-
+        
         Predicate<ColumnPredicate> isGreaterThan = predicate ->
                 (predicate.getOperator() == SubstraitOperator.GREATER_THAN_OR_EQUAL_TO || predicate.getOperator() == SubstraitOperator.GREATER_THAN);
         ColumnPredicate lowerBoundPredicate = getColumnPredicate(predicates, isGreaterThan);
-
+        
         if (lowerBoundPredicate != null) {
             switch (lowerBoundPredicate.getOperator()) {
                 case GREATER_THAN:
-                    rangeConjuncts.add(toPredicate(originalColumnName, ">", lowerBoundPredicate.getValue(),
+                    rangeConjuncts.add(toPredicate(originalColumnName, ">", lowerBoundPredicate.getValue(), 
                                                  accumulator, valueNameProducer.getNext(), recordMetadata));
                     break;
                 case GREATER_THAN_OR_EQUAL_TO:
-                    rangeConjuncts.add(toPredicate(originalColumnName, ">=", lowerBoundPredicate.getValue(),
+                    rangeConjuncts.add(toPredicate(originalColumnName, ">=", lowerBoundPredicate.getValue(), 
                                                  accumulator, valueNameProducer.getNext(), recordMetadata));
                     break;
             }
