@@ -231,9 +231,7 @@ public final class SubstraitRelUtils
     {
         try {
             byte[] planBytes = Base64.getDecoder().decode(planString);
-            Plan plan =  Plan.parseFrom(planBytes);
-            System.out.println("plan structure: " + plan.toString());
-            return plan;
+            return Plan.parseFrom(planBytes);
         }
         catch (InvalidProtocolBufferException e) {
             throw new RuntimeException("Failed to parse Substrait plan", e);
