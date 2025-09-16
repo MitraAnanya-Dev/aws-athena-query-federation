@@ -42,7 +42,7 @@ import com.amazonaws.athena.connector.lambda.domain.predicate.ValueSet;
 import com.amazonaws.athena.connector.substrait.SubstraitFunctionParser;
 import com.amazonaws.athena.connector.substrait.SubstraitMetadataParser;
 import com.amazonaws.athena.connector.substrait.model.ColumnPredicate;
-import com.amazonaws.athena.connector.substrait.model.Operator;
+import com.amazonaws.athena.connector.substrait.model.SubstraitOperator;
 import com.amazonaws.athena.connector.substrait.model.SubstraitRelModel;
 import io.substrait.proto.Plan;
 import io.substrait.proto.SimpleExtensionDeclaration;
@@ -309,7 +309,7 @@ public final class QueryUtils
         List<Document> otherPredicates = new ArrayList<>();
         for (ColumnPredicate pred : colPreds) {
             Object value = pred.getValue();
-            Operator op = pred.getOperator();
+            SubstraitOperator op = pred.getOperator();
             switch (op) {
                 case EQUAL:
                     equalValues.add(value);
