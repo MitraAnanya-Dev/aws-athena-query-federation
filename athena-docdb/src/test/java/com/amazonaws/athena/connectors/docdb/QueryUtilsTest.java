@@ -25,6 +25,7 @@ import com.amazonaws.athena.connector.lambda.domain.predicate.SortedRangeSet;
 import com.amazonaws.athena.connector.lambda.domain.predicate.ValueSet;
 import com.amazonaws.athena.connector.substrait.model.ColumnPredicate;
 import com.amazonaws.athena.connector.substrait.model.Operator;
+import com.amazonaws.athena.connector.substrait.model.SubstraitOperator;
 import com.google.common.collect.ImmutableList;
 import io.substrait.proto.Plan;
 import org.apache.arrow.vector.types.Types;
@@ -120,8 +121,8 @@ public class QueryUtilsTest
 
     @ParameterizedTest
     @MethodSource("inputTestMakeQueryFromPlanPredicateProvider")
-    public void testMakeQueryFromPlanWithDifferentOperators(final Operator operator, final Object value,
-                                                           final String expectedMongoOp, final ArrowType arrowType)
+    public void testMakeQueryFromPlanWithDifferentOperators(final SubstraitOperator operator, final Object value,
+                                                            final String expectedMongoOp, final ArrowType arrowType)
     {
         ColumnPredicate pred = new ColumnPredicate("colX", operator, value, arrowType);
         Map<String, List<ColumnPredicate>> predicates = Collections.singletonMap("colX",
@@ -158,7 +159,7 @@ public class QueryUtilsTest
     public void testMakeQueryFromPlanWithMultipleEqualPredicates(List<Object> values, List<Object> expectedInValues)
     {
         List<ColumnPredicate> predicatesList = values.stream()
-                .map(value -> new ColumnPredicate("colX", Operator.EQUAL, value, new ArrowType.Int(32, true)))
+                .map(value -> new ColumnPredicate("colX", SubstraitOperator.EQUAL, value, new ArrowType.Int(32, true)))
                 .collect(Collectors.toList());
         Map<String, List<ColumnPredicate>> predicates = Collections.singletonMap("colX", predicatesList);
         Document result = QueryUtils.makeQueryFromPlan(predicates);
@@ -198,11 +199,11 @@ public class QueryUtilsTest
     public void testMakeQueryFromPlanWithMultipleColumns()
     {
         List<ColumnPredicate> col1Predicates = Arrays.asList(
-                new ColumnPredicate("col1", Operator.EQUAL, 123, new ArrowType.Int(32, true)),
-                new ColumnPredicate("col1", Operator.EQUAL, 456, new ArrowType.Int(32, true))
+                new ColumnPredicate("col1", SubstraitOperator.EQUAL, 123, new ArrowType.Int(32, true)),
+                new ColumnPredicate("col1", SubstraitOperator.EQUAL, 456, new ArrowType.Int(32, true))
         );
         List<ColumnPredicate> col2Predicates = Collections.singletonList(
-                new ColumnPredicate("col2", Operator.GREATER_THAN, 100, new ArrowType.Int(32, true))
+                new ColumnPredicate("col2", SubstraitOperator.GREATER_THAN, 100, new ArrowType.Int(32, true))
         );
         Map<String, List<ColumnPredicate>> predicates = new HashMap<>();
         predicates.put("col1", col1Predicates);
@@ -254,8 +255,8 @@ public class QueryUtilsTest
                 // Multiple EQUAL predicates (IN condition)
                 Arguments.of(
                         Arrays.asList(
-                                new ColumnPredicate("colX", Operator.EQUAL, 123, new ArrowType.Int(32, true)),
-                                new ColumnPredicate("colX", Operator.EQUAL, 456, new ArrowType.Int(32, true))
+                                new ColumnPredicate("colX", SubstraitOperator.EQUAL, 123, new ArrowType.Int(32, true)),
+                                new ColumnPredicate("colX", SubstraitOperator.EQUAL, 456, new ArrowType.Int(32, true))
                         ),
                         "$in",
                         Arrays.asList(123, 456)
@@ -263,9 +264,9 @@ public class QueryUtilsTest
                 // IN + GT (should use $and)
                 Arguments.of(
                         Arrays.asList(
-                                new ColumnPredicate("colX", Operator.EQUAL, 123, new ArrowType.Int(32, true)),
-                                new ColumnPredicate("colX", Operator.EQUAL, 456, new ArrowType.Int(32, true)),
-                                new ColumnPredicate("colX", Operator.GREATER_THAN, 100, new ArrowType.Int(32, true))
+                                new ColumnPredicate("colX", SubstraitOperator.EQUAL, 123, new ArrowType.Int(32, true)),
+                                new ColumnPredicate("colX", SubstraitOperator.EQUAL, 456, new ArrowType.Int(32, true)),
+                                new ColumnPredicate("colX", SubstraitOperator.GREATER_THAN, 100, new ArrowType.Int(32, true))
                         ),
                         "$and",
                         Arrays.asList(
@@ -276,8 +277,8 @@ public class QueryUtilsTest
                 // Multiple non-EQUAL predicates (should use $or)
                 Arguments.of(
                         Arrays.asList(
-                                new ColumnPredicate("colX", Operator.GREATER_THAN, 100, new ArrowType.Int(32, true)),
-                                new ColumnPredicate("colX", Operator.LESS_THAN, 200, new ArrowType.Int(32, true))
+                                new ColumnPredicate("colX", SubstraitOperator.GREATER_THAN, 100, new ArrowType.Int(32, true)),
+                                new ColumnPredicate("colX", SubstraitOperator.LESS_THAN, 200, new ArrowType.Int(32, true))
                         ),
                         "$or",
                         Arrays.asList(
@@ -291,16 +292,16 @@ public class QueryUtilsTest
     private static Stream<Arguments> inputTestMakeQueryFromPlanPredicateProvider()
     {
         return Stream.of(
-                Arguments.of(Operator.EQUAL, 42, "$eq", new ArrowType.Int(32, true)),
-                Arguments.of(Operator.NOT_EQUAL, 100, "$ne", new ArrowType.Int(32, true)),
-                Arguments.of(Operator.GREATER_THAN, 50, "$gt", new ArrowType.Int(32, true)),
-                Arguments.of(Operator.GREATER_THAN_OR_EQUAL_TO, 75, "$gte", new ArrowType.Int(32, true)),
-                Arguments.of(Operator.LESS_THAN, 25, "$lt", new ArrowType.Int(32, true)),
-                Arguments.of(Operator.LESS_THAN_OR_EQUAL_TO, 30, "$lte",
+                Arguments.of(SubstraitOperator.EQUAL, 42, "$eq", new ArrowType.Int(32, true)),
+                Arguments.of(SubstraitOperator.NOT_EQUAL, 100, "$ne", new ArrowType.Int(32, true)),
+                Arguments.of(SubstraitOperator.GREATER_THAN, 50, "$gt", new ArrowType.Int(32, true)),
+                Arguments.of(SubstraitOperator.GREATER_THAN_OR_EQUAL_TO, 75, "$gte", new ArrowType.Int(32, true)),
+                Arguments.of(SubstraitOperator.LESS_THAN, 25, "$lt", new ArrowType.Int(32, true)),
+                Arguments.of(SubstraitOperator.LESS_THAN_OR_EQUAL_TO, 30, "$lte",
                         new ArrowType.Int(32, true)),
-                Arguments.of(Operator.EQUAL, "testString", "$eq", new ArrowType.Utf8()),
-                Arguments.of(Operator.IS_NULL, null, "$eq", new ArrowType.Utf8()),      // isNullPredicate
-                Arguments.of(Operator.IS_NOT_NULL, null, "$ne", new ArrowType.Utf8())   // isNotNullPredicate
+                Arguments.of(SubstraitOperator.EQUAL, "testString", "$eq", new ArrowType.Utf8()),
+                Arguments.of(SubstraitOperator.IS_NULL, null, "$eq", new ArrowType.Utf8()),      // isNullPredicate
+                Arguments.of(SubstraitOperator.IS_NOT_NULL, null, "$ne", new ArrowType.Utf8())   // isNotNullPredicate
         );
     }
 }

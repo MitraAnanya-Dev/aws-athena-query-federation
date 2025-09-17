@@ -43,6 +43,7 @@ import com.amazonaws.athena.connector.substrait.SubstraitFunctionParser;
 import com.amazonaws.athena.connector.substrait.SubstraitMetadataParser;
 import com.amazonaws.athena.connector.substrait.model.ColumnPredicate;
 import com.amazonaws.athena.connector.substrait.model.Operator;
+import com.amazonaws.athena.connector.substrait.model.SubstraitOperator;
 import com.amazonaws.athena.connector.substrait.model.SubstraitRelModel;
 import io.substrait.proto.Plan;
 import io.substrait.proto.SimpleExtensionDeclaration;
@@ -54,11 +55,7 @@ import org.bson.Document;
 import org.bson.json.JsonParseException;
 import org.bson.types.ObjectId;
 
-import java.util.ArrayList;
-import java.util.HashMap;
-import java.util.List;
-import java.util.Map;
-import java.util.Objects;
+import java.util.*;
 import java.util.stream.Collectors;
 
 import static com.google.common.base.Preconditions.checkState;
@@ -309,7 +306,7 @@ public final class QueryUtils
         List<Document> otherPredicates = new ArrayList<>();
         for (ColumnPredicate pred : colPreds) {
             Object value = pred.getValue();
-            Operator op = pred.getOperator();
+            SubstraitOperator op = pred.getOperator();
             switch (op) {
                 case EQUAL:
                     equalValues.add(value);
@@ -330,9 +327,9 @@ public final class QueryUtils
                     otherPredicates.add(new Document(LTE_OP, value));
                     break;
                 case IS_NULL:
-                    return documentOf(column, isNullPredicate());
+                    return documentOf(column.toLowerCase(Locale.ROOT), isNullPredicate());
                 case IS_NOT_NULL:
-                    return documentOf(column, isNotNullPredicate());
+                    return documentOf(column.toLowerCase(Locale.ROOT), isNotNullPredicate());
                 default:
                     throw new UnsupportedOperationException("Unsupported operator: " + op);
             }
@@ -343,14 +340,14 @@ public final class QueryUtils
             // If there are other predicates, we need to combine with $and
             if (!otherPredicates.isEmpty()) {
                 List<Document> andConditions = new ArrayList<>();
-                andConditions.add(new Document(column, inPredicate));
+                andConditions.add(new Document(column.toLowerCase(Locale.ROOT), inPredicate));
                 // Add other predicates as individual conditions
                 for (Document otherPred : otherPredicates) {
-                    andConditions.add(new Document(column, otherPred));
+                    andConditions.add(new Document(column.toLowerCase(Locale.ROOT), otherPred));
                 }
                 return new Document(AND_OP, andConditions);
             }
-            return documentOf(column, inPredicate);
+            return documentOf(column.toLowerCase(Locale.ROOT), inPredicate);
         }
         // Single EQUAL value
         else if (equalValues.size() == 1) {
@@ -358,13 +355,13 @@ public final class QueryUtils
             // If there are other predicates, combine with $and
             if (!otherPredicates.isEmpty()) {
                 List<Document> andConditions = new ArrayList<>();
-                andConditions.add(new Document(column, equalPredicate));
+                andConditions.add(new Document(column.toLowerCase(Locale.ROOT), equalPredicate));
                 for (Document otherPred : otherPredicates) {
-                    andConditions.add(new Document(column, otherPred));
+                    andConditions.add(new Document(column.toLowerCase(Locale.ROOT), otherPred));
                 }
                 return new Document(AND_OP, andConditions);
             }
-            return documentOf(column, equalPredicate);
+            return documentOf(column.toLowerCase(Locale.ROOT), equalPredicate);
         }
         // Only non-EQUAL predicates
         else if (!otherPredicates.isEmpty()) {
@@ -372,13 +369,13 @@ public final class QueryUtils
             if (otherPredicates.size() > 1) {
                 List<Document> orConditions = new ArrayList<>();
                 for (Document predicate : otherPredicates) {
-                    orConditions.add(new Document(column, predicate));
+                    orConditions.add(new Document(column.toLowerCase(Locale.ROOT), predicate));
                 }
                 return new Document(OR_OP, orConditions);
             }
             // Single non-EQUAL predicate
             else {
-                return documentOf(column, otherPredicates.get(0));
+                return documentOf(column.toLowerCase(Locale.ROOT), otherPredicates.get(0));
             }
         }
         return new Document();

@@ -425,19 +425,21 @@ public class BlockUtils
 
         StringBuilder sb = new StringBuilder();
         for (FieldReader nextReader : block.getFieldReaders()) {
-            try {
-                nextReader.setPosition(row);
-                if (sb.length() > 0) {
-                    sb.append(", ");
+            if (nextReader.getField().getName() != "_id") {
+                try {
+                    nextReader.setPosition(row);
+                    if (sb.length() > 0) {
+                        sb.append(", ");
+                    }
+                    sb.append("[");
+                    sb.append(nextReader.getField().getName());
+                    sb.append(" : ");
+                    sb.append(fieldToString(nextReader));
+                    sb.append("]");
                 }
-                sb.append("[");
-                sb.append(nextReader.getField().getName());
-                sb.append(" : ");
-                sb.append(fieldToString(nextReader));
-                sb.append("]");
-            }
-            catch (RuntimeException ex) {
-                throw new AthenaConnectorException("Error processing field " + nextReader.getField().getName(), ErrorDetails.builder().errorCode(FederationSourceErrorCode.INTERNAL_SERVICE_EXCEPTION.toString()).errorMessage(ex.getMessage()).build());
+                catch (RuntimeException ex) {
+                    throw new AthenaConnectorException("Error processing field " + nextReader.getField().getName(), ErrorDetails.builder().errorCode(FederationSourceErrorCode.INTERNAL_SERVICE_EXCEPTION.toString()).errorMessage(ex.getMessage()).build());
+                }
             }
         }
 

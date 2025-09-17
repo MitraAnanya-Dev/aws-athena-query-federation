@@ -230,9 +230,9 @@ public abstract class RecordHandler
                 System.out.println("spiller has not spilled. Returning ReadRecordResponse.");
                 ReadRecordsResponse rrs = new ReadRecordsResponse(request.getCatalogName(), spiller.getBlock());
                 System.out.println("record count: " + rrs.getRecordCount());
-                for (int i = 0; i <= rrs.getRecordCount(); i++) {
-                    System.out.println("doReadRecordsNoSpill: " + BlockUtils.rowToString(rrs.getRecords(), i));
-                }
+//                for (int i = 0; i <= rrs.getRecordCount(); i++) {
+//                    System.out.println("doReadRecordsNoSpill: " + BlockUtils.rowToString(rrs.getRecords(), i));
+//                }
                 return rrs;
             }
             else {

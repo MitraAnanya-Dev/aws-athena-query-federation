@@ -515,7 +515,7 @@ public class DocDBRecordHandlerTest
 
         ReadRecordsResponse response = (ReadRecordsResponse) rawResponse;
         logger.info("doReadRecordsNoSpill: rows[{}]", response.getRecordCount());
-        logger.info("doReadRecordsNoSpill: {}", BlockUtils.rowToString(response.getRecords(), 0));
+        System.out.println("doReadRecordsNoSpill: {} " + BlockUtils.rowToString(response.getRecords(), 0));
         assertTrue(response.getRecordCount() == 1);
         String expectedString = "[DbRef : {[_db : otherDb],[_ref : otherColl],[_id : " + id.toHexString() + "]}], [SimpleStruct : {[SomeSimpleStruct : someSimpleStruct]}]";
         assertEquals(expectedString, BlockUtils.rowToString(response.getRecords(), 0));

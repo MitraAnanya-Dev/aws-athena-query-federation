@@ -161,6 +161,7 @@ public class DocDBRecordHandler
         Plan plan = null;
         if (queryPlan != null) {
             plan = SubstraitRelUtils.deserializeSubstraitPlan(queryPlan.getSubstraitPlan());
+            System.out.println("plan: " + plan.toString());
         }
 
         // ---------------------- LIMIT pushdown support ----------------------
@@ -220,6 +221,27 @@ public class DocDBRecordHandler
         // insensitive indexes allows for case insensitive projections.
         Document projection = disableProjectionAndCasing ? null : QueryUtils.makeProjection(recordsRequest.getSchema());
         System.out.println("readWithConstraint: query " + query + " projection " + projection);
+
+        System.out.println("=== DEBUG INFO ===");
+
+        System.out.println("Query: " + query.toJson());
+        System.out.println("Table: " + table.toString());
+        System.out.println("Projection: " + (projection != null ? projection.toJson() : "null"));
+        System.out.println("Collection: " + table.getNamespace().getCollectionName());
+        System.out.println("Database: " + table.getNamespace().getDatabaseName());
+        // Check collection existence and count
+        try {
+            long totalCount = table.countDocuments();
+            System.out.println("Total documents in collection: " + totalCount);
+            long matchingCount = table.countDocuments(query);
+            System.out.println("Documents matching query: " + matchingCount);
+            // Try a simple query
+            Document firstDoc = table.find().first();
+            System.out.println("First document (no filter): " + (firstDoc != null ? firstDoc.toJson() : "null"));
+        }
+        catch (Exception e) {
+            System.out.println("Error checking collection: " + e.getMessage());
+        }
 
         final MongoCursor<Document> iterable = table
                 .find(query)

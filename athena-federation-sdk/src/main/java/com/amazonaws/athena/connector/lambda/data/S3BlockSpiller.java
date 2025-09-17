@@ -194,7 +194,7 @@ public class S3BlockSpiller
         Block block = inProgressBlock.get();
         int rowCount = block.getRowCount();
         System.out.println("S3BlockSPiller writeRows rowCount: " + rowCount);
-        System.out.println("S3BlockSPiller writeRows block: " + BlockUtils.rowToString(block, rowCount));
+//        System.out.println("S3BlockSPiller writeRows block: " + BlockUtils.rowToString(block, rowCount));
 
         int rows;
         try {
