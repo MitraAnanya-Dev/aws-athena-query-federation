@@ -42,7 +42,6 @@ import com.amazonaws.athena.connector.lambda.domain.predicate.ValueSet;
 import com.amazonaws.athena.connector.substrait.SubstraitFunctionParser;
 import com.amazonaws.athena.connector.substrait.SubstraitMetadataParser;
 import com.amazonaws.athena.connector.substrait.model.ColumnPredicate;
-import com.amazonaws.athena.connector.substrait.model.Operator;
 import com.amazonaws.athena.connector.substrait.model.SubstraitOperator;
 import com.amazonaws.athena.connector.substrait.model.SubstraitRelModel;
 import io.substrait.proto.Plan;

@@ -182,6 +182,7 @@ public abstract class RecordHandler
             case READ_RECORDS:
                 try (RecordResponse response = doReadRecords(allocator, (ReadRecordsRequest) req)) {
                     logger.info("doHandleRequest: response[{}]", response);
+                    System.out.println("RecordResponse: " + response);
                     assertNotNull(response);
                     objectMapper.writeValue(outputStream, response);
                 }

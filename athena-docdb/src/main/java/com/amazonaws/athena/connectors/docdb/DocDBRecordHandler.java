@@ -32,13 +32,10 @@ import com.amazonaws.athena.connector.lambda.records.ReadRecordsRequest;
 import com.amazonaws.athena.connector.substrait.SubstraitRelUtils;
 import com.amazonaws.athena.connector.substrait.model.ColumnPredicate;
 import com.amazonaws.athena.connector.substrait.model.SubstraitRelModel;
+import com.amazonaws.athena.connector.substrait.SubstraitMetadataParser;
 import com.amazonaws.athena.connectors.docdb.qpt.DocDBQueryPassthrough;
-import com.mongodb.client.MongoClient;
-import com.mongodb.client.MongoCollection;
-import com.mongodb.client.MongoCursor;
-import com.mongodb.client.MongoDatabase;
-import io.substrait.proto.FetchRel;
-import io.substrait.proto.Plan;
+import com.mongodb.client.*;
+import io.substrait.proto.*;
 import org.apache.arrow.util.VisibleForTesting;
 import org.apache.arrow.vector.types.Types;
 import org.apache.arrow.vector.types.pojo.Field;
@@ -50,9 +47,7 @@ import software.amazon.awssdk.services.athena.AthenaClient;
 import software.amazon.awssdk.services.s3.S3Client;
 import software.amazon.awssdk.services.secretsmanager.SecretsManagerClient;
 
-import java.util.List;
-import java.util.Map;
-import java.util.TreeMap;
+import java.util.*;
 import java.util.concurrent.atomic.AtomicLong;
 
 import static com.amazonaws.athena.connector.lambda.handlers.GlueMetadataHandler.SOURCE_TABLE_PROPERTY;
@@ -169,6 +164,13 @@ public class DocDBRecordHandler
         boolean hasLimit = limitPair.getLeft();
         int limit = limitPair.getRight();
         System.out.println("readWithConstraints: limit: " + limit);
+
+        // ---------------------- SORT pushdown support ----------------------
+        Pair<Boolean, Document> sortPair = getSortFromPlan(plan);
+        boolean hasSort = sortPair.getLeft();
+        Document sortDoc = sortPair.getRight();
+        // ----------------------------
+
         if (recordsRequest.getConstraints().isQueryPassThrough()) {
             System.out.println("readWithConstraints: isQueryPassThrough");
             Map<String, String> qptArguments = recordsRequest.getConstraints().getQueryPassthroughArguments();
@@ -222,6 +224,23 @@ public class DocDBRecordHandler
         Document projection = disableProjectionAndCasing ? null : QueryUtils.makeProjection(recordsRequest.getSchema());
         System.out.println("readWithConstraint: query " + query + " projection " + projection);
 
+        // ----------------- order by --------------
+
+        // Build the find operation with proper pushdown order
+        FindIterable<Document> findIterable = table.find(query).projection(projection);
+        // Apply SORT pushdown first (should be before LIMIT for correct semantics)
+        if (hasSort && !sortDoc.isEmpty()) {
+            findIterable = findIterable.sort(sortDoc);
+            System.out.println("Applying ORDER BY pushdown: " + sortDoc.toJson());
+        }
+        // Apply LIMIT pushdown after SORT
+        if (hasLimit) {
+            findIterable = findIterable.limit(limit);
+            System.out.println("Applying LIMIT pushdown in ordered result set: " + limit);
+        }
+
+        // ----------------- order by --------------
+
         System.out.println("=== DEBUG INFO ===");
 
         System.out.println("Query: " + query.toJson());
@@ -236,22 +255,26 @@ public class DocDBRecordHandler
             long matchingCount = table.countDocuments(query);
             System.out.println("Documents matching query: " + matchingCount);
             // Try a simple query
-            Document firstDoc = table.find().first();
-            System.out.println("First document (no filter): " + (firstDoc != null ? firstDoc.toJson() : "null"));
+//            Document firstDoc = table.find().first();
+//            System.out.println("First document (no filter): " + (firstDoc != null ? firstDoc.toJson() : "null"));
         }
         catch (Exception e) {
             System.out.println("Error checking collection: " + e.getMessage());
         }
-
-        final MongoCursor<Document> iterable = table
-                .find(query)
-                .projection(projection)
+        // ---------- order by -----------------
+        final MongoCursor<Document> iterable = findIterable
                 .batchSize(MONGO_QUERY_BATCH_SIZE).iterator();
         System.out.println("MongoCursor iterable created: " + (iterable != null));
         long numRows = 0;
         AtomicLong numResultRows = new AtomicLong(0);
         System.out.println("Has next doc: " + iterable.hasNext());
         System.out.println("Query running: " + queryStatusChecker.isQueryRunning() + " " + iterable.toString());
+
+        Map<String, Object> previousSortValues = new HashMap<>();
+        final int PREVIEW_LIMIT = 5000000;
+
+        Map<String, List<Object>> sortPreviews = new HashMap<>();
+
         while (iterable.hasNext() && queryStatusChecker.isQueryRunning()) {
             System.out.println("in loop: Has next doc: " + iterable.hasNext() + " " + iterable.toString());
             System.out.println("in loop: Query running: " + queryStatusChecker.isQueryRunning());
@@ -261,9 +284,23 @@ public class DocDBRecordHandler
             }
             numRows++;
             System.out.println("Processing row #" + numRows);
+            long finalNumRows = numRows;
             spiller.writeRows((Block block, int rowNum) -> {
                 Map<String, Object> doc = documentAsMap(iterable.next(), disableProjectionAndCasing);
                 System.out.println("documentAsMap: " + doc);
+
+                // >>> sort verification <<<
+                if (hasSort && !sortDoc.isEmpty()) {
+                    for (String sortField : sortDoc.keySet()) {
+                        Object currentValue = doc.get(sortField);
+                        sortPreviews
+                                .computeIfAbsent(sortField, k -> new ArrayList<>())
+                                .add(currentValue);
+                        System.out.println();
+                        }
+                    }
+                // >>> end sort verification <<<
+
                 boolean matched = true;
                 for (Field nextField : recordsRequest.getSchema().getFields()) {
                     Object value = TypeUtils.coerce(nextField, doc.get(nextField.getName()));
@@ -292,7 +329,10 @@ public class DocDBRecordHandler
                 return 1;
             });
         }
-
+        System.out.println("SORT PREVIEW: ");
+        for (Map.Entry<String, List<Object>> entry : sortPreviews.entrySet()) {
+            System.out.println("Field: " + entry.getKey() + " -> " + entry.getValue());
+        }
         System.out.println("readWithConstraint: numRows: " + numRows + " numResultRows " + numResultRows.get());
     }
 
@@ -329,9 +369,88 @@ public class DocDBRecordHandler
         return constraints.hasLimit();
     }
 
+    @SuppressWarnings({"rawtypes", "unchecked"})
+    private int compareValues(Object a, Object b) {
+        if (a == null && b == null) return 0;
+        if (a == null) return -1;
+        if (b == null) return 1;
+        if (a instanceof Comparable && b instanceof Comparable) {
+            return ((Comparable) a).compareTo(b);
+        }
+        return a.toString().compareTo(b.toString());
+    }
+
     private int getLimit(SubstraitRelModel substraitRelModel)
     {
         FetchRel fetchRel = substraitRelModel.getFetchRel();
         return (int) fetchRel.getCount();
+    }
+
+    // -------------- order by --------------------
+
+    /**
+     * Extracts sort information from Substrait plan for ORDER BY pushdown
+     */
+    private Pair<Boolean, Document> getSortFromPlan(Plan plan)
+    {
+        if (plan == null || plan.getRelationsList().isEmpty()) {
+            return Pair.of(false, new Document());
+        }
+        try {
+            SubstraitRelModel substraitRelModel = SubstraitRelModel.buildSubstraitRelModel(
+                    plan.getRelations(0).getRoot().getInput());
+            if (substraitRelModel.getSortRel() == null) {
+                return Pair.of(false, new Document());
+            }
+            // Use the same column resolution as filter predicates
+            List<String> tableColumns = SubstraitMetadataParser.getTableColumns(substraitRelModel);
+            System.out.println("tableColumns: " + Arrays.toString(tableColumns.toArray()));
+            Document sortDoc = extractSortFields(substraitRelModel.getSortRel(), tableColumns);
+            return Pair.of(true, sortDoc);
+        }
+        catch (Exception e) {
+            System.out.println("Failed to extract sort from plan" + e);
+            return Pair.of(false, new Document());
+        }
+    }
+
+    private Document extractSortFields(SortRel sortRel, List<String> tableColumns)
+    {
+        Document sortDoc = new Document();
+        if (sortRel == null || sortRel.getSortsCount() == 0) {
+            return sortDoc;
+        }
+        for (SortField sortField : sortRel.getSortsList()) {
+            try {
+                int fieldIndex = extractFieldIndexFromExpression(sortField.getExpr());
+                if (fieldIndex >= 0 && fieldIndex < tableColumns.size()) {
+                    String columnName = tableColumns.get(fieldIndex).toLowerCase();
+                    int direction = isAscending(sortField) ? 1 : -1;
+                    sortDoc.put(columnName, direction);
+                    System.out.println("Added sort field: " + columnName + " " + direction);
+                }
+            }
+            catch (Exception e) {
+                System.out.println("Failed to extract sort field, skipping: " + e.getMessage());
+            }
+        }
+        return sortDoc;
+    }
+
+    private int extractFieldIndexFromExpression(Expression expression)
+    {
+        if (expression.hasSelection() && expression.getSelection().hasDirectReference()) {
+            Expression.ReferenceSegment segment = expression.getSelection().getDirectReference();
+            if (segment.hasStructField()) {
+                return segment.getStructField().getField();
+            }
+        }
+        throw new IllegalArgumentException("Cannot extract field index from expression");
+    }
+
+    private boolean isAscending(SortField sortField)
+    {
+        return sortField.getDirection() == SortField.SortDirection.SORT_DIRECTION_ASC_NULLS_LAST ||
+                sortField.getDirection() == SortField.SortDirection.SORT_DIRECTION_ASC_NULLS_FIRST;
     }
 }

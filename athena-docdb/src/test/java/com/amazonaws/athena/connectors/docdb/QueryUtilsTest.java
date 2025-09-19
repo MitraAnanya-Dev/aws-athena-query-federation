@@ -24,7 +24,6 @@ import com.amazonaws.athena.connector.lambda.domain.predicate.Range;
 import com.amazonaws.athena.connector.lambda.domain.predicate.SortedRangeSet;
 import com.amazonaws.athena.connector.lambda.domain.predicate.ValueSet;
 import com.amazonaws.athena.connector.substrait.model.ColumnPredicate;
-import com.amazonaws.athena.connector.substrait.model.Operator;
 import com.amazonaws.athena.connector.substrait.model.SubstraitOperator;
 import com.google.common.collect.ImmutableList;
 import io.substrait.proto.Plan;
@@ -133,7 +132,7 @@ public class QueryUtilsTest
         assertNotNull(result);
         Document colDoc = (Document) result.get("colX");
         assertTrue(colDoc.containsKey(expectedMongoOp));
-        if (value != null && !operator.equals(Operator.IS_NULL) && !operator.equals(Operator.IS_NOT_NULL)) {
+        if (value != null && !operator.equals(SubstraitOperator.IS_NULL) && !operator.equals(SubstraitOperator.IS_NOT_NULL)) {
             assertEquals(value, colDoc.get(expectedMongoOp));
         }
     }
