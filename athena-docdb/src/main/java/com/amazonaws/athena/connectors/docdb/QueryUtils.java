@@ -417,6 +417,23 @@ public final class QueryUtils
                 case LESS_THAN_OR_EQUAL_TO:
                     otherPredicates.add(new Document(LTE_OP, value));
                     break;
+                case NOT_IN:
+                    if (value instanceof List) {
+                        List<Object> notInValues = (List<Object>) value;
+                        if (!notInValues.isEmpty()) {
+                            Document notInPredicate;
+                            if (column.equals(COLUMN_NAME_ID)) {
+                                List<ObjectId> objectIdList = notInValues.stream()
+                                        .map(v -> new ObjectId(v.toString()))
+                                        .collect(Collectors.toList());
+                                notInPredicate = new Document(NOTIN_OP, objectIdList);
+                            } else {
+                                notInPredicate = new Document(NOTIN_OP, notInValues);
+                            }
+                            otherPredicates.add(notInPredicate);
+                        }
+                    }
+                    break;
                 default:
                     throw new UnsupportedOperationException("Unsupported operator: " + op);
             }

@@ -154,9 +154,13 @@ public class DocDBRecordHandler
         // ---------------------- Substrait Plan extraction ----------------------
         QueryPlan queryPlan = recordsRequest.getConstraints().getQueryPlan();
         Plan plan = null;
+        boolean hasQueryPlan;
         if (queryPlan != null) {
+            hasQueryPlan = true;
             plan = SubstraitRelUtils.deserializeSubstraitPlan(queryPlan.getSubstraitPlan());
             System.out.println("plan: " + plan.toString());
+        } else {
+            hasQueryPlan = false;
         }
 
         // ---------------------- LIMIT pushdown support ----------------------
@@ -312,7 +316,7 @@ public class DocDBRecordHandler
                                 matched &= block.offerComplexValue(nextField.getName(), rowNum, DEFAULT_FIELD_RESOLVER, value);
                                 break;
                             default:
-                                matched &= block.offerValue(nextField.getName(), rowNum, value);
+                                matched &= block.offerValue(nextField.getName(), rowNum, value, hasQueryPlan);
                                 break;
                         }
                         if (!matched) {

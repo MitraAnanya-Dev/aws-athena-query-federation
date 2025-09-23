@@ -85,6 +85,15 @@ public final class SubstraitFunctionParser
             return columnPredicates;
         }
 
+        // Handle NOT operator - it's a unary operator
+        if ("not:bool".equals(functionInfo.getFunctionName())) {
+            ColumnPredicate notPredicate = handleNotOperator(functionInfo, extensionDeclarationList, columnNames);
+            if (notPredicate != null) {
+                columnPredicates.add(notPredicate);
+            }
+            return columnPredicates;
+        }
+
         // Handle logical operators by flattening
         if (isLogicalOperator(functionInfo.getFunctionName())) {
             for (FunctionArgument argument : functionInfo.getArguments()) {
@@ -230,6 +239,8 @@ public final class SubstraitFunctionParser
                 return SubstraitOperator.AND;
             case "or:bool":
                 return SubstraitOperator.OR;
+            case "not:bool":
+                return SubstraitOperator.NOT;
             default:
                 throw new UnsupportedOperationException("Unsupported operator function: " + functionName);
         }
@@ -258,5 +269,102 @@ public final class SubstraitFunctionParser
         {
             return arguments;
         }
+    }
+
+    /**
+     * Handle NOT operator - recursively parse the inner expression and negate it
+     */
+    private static ColumnPredicate handleNotOperator(ScalarFunctionInfo notFunctionInfo,
+                                                     List<SimpleExtensionDeclaration> extensionDeclarationList,
+                                                     List<String> columnNames)
+    {
+        if (notFunctionInfo.getArguments().size() != 1) {
+            return null;
+        }
+        Expression innerExpression = notFunctionInfo.getArguments().get(0).getValue();
+        List<ColumnPredicate> innerPredicates = parseColumnPredicates(extensionDeclarationList, innerExpression, columnNames);
+        // Handle NOT IN pattern: NOT(OR(EQUAL, EQUAL, ...)) on the same column
+        if (isNotInPattern(innerPredicates)) {
+            return createNotInPredicate(innerPredicates);
+        }
+        // For simple cases where NOT applies to a single predicate
+        if (innerPredicates.size() == 1) {
+            ColumnPredicate innerPredicate = innerPredicates.get(0);
+            return createNegatedPredicate(innerPredicate);
+        }
+        // Complex NOT operations not yet supported
+        return null;
+    }
+
+    /**
+     * Check if this is a NOT IN pattern: multiple EQUAL predicates on the same column
+     */
+    private static boolean isNotInPattern(List<ColumnPredicate> predicates)
+    {
+        if (predicates.size() <= 1) {
+            return false;
+        }
+        String firstColumn = predicates.get(0).getColumn();
+        for (ColumnPredicate predicate : predicates) {
+            if (predicate.getOperator() != SubstraitOperator.EQUAL ||
+                    !predicate.getColumn().equals(firstColumn)) {
+                return false;
+            }
+        }
+        return true;
+    }
+
+    /**
+     * Create a NOT_IN predicate from multiple EQUAL predicates
+     */
+    private static ColumnPredicate createNotInPredicate(List<ColumnPredicate> equalPredicates)
+    {
+        if (equalPredicates.isEmpty()) {
+            return null;
+        }
+        String column = equalPredicates.get(0).getColumn();
+        List<Object> excludedValues = new ArrayList<>();
+        for (ColumnPredicate predicate : equalPredicates) {
+            excludedValues.add(predicate.getValue());
+        }
+        return new ColumnPredicate(column, SubstraitOperator.NOT_IN, excludedValues, null);
+    }
+
+    /**
+     * Create a negated version of a predicate
+     */
+    private static ColumnPredicate createNegatedPredicate(ColumnPredicate predicate)
+    {
+        // Simple negation mapping
+        return switch (predicate.getOperator()) {
+            case EQUAL ->
+                    new ColumnPredicate(predicate.getColumn(), SubstraitOperator.NOT_EQUAL,
+                            predicate.getValue(), predicate.getArrowType());
+            case NOT_EQUAL ->
+                    new ColumnPredicate(predicate.getColumn(), SubstraitOperator.EQUAL,
+                            predicate.getValue(), predicate.getArrowType());
+            case GREATER_THAN ->
+                    new ColumnPredicate(predicate.getColumn(), SubstraitOperator.LESS_THAN_OR_EQUAL_TO,
+                            predicate.getValue(), predicate.getArrowType());
+            case GREATER_THAN_OR_EQUAL_TO ->
+                    new ColumnPredicate(predicate.getColumn(), SubstraitOperator.LESS_THAN,
+                            predicate.getValue(), predicate.getArrowType());
+            case LESS_THAN ->
+                    new ColumnPredicate(predicate.getColumn(), SubstraitOperator.GREATER_THAN_OR_EQUAL_TO,
+                            predicate.getValue(), predicate.getArrowType());
+            case LESS_THAN_OR_EQUAL_TO ->
+                    new ColumnPredicate(predicate.getColumn(), SubstraitOperator.GREATER_THAN,
+                            predicate.getValue(), predicate.getArrowType());
+            case IS_NULL ->
+                    new ColumnPredicate(predicate.getColumn(), SubstraitOperator.IS_NOT_NULL,
+                            null, predicate.getArrowType());
+            case IS_NOT_NULL ->
+                    new ColumnPredicate(predicate.getColumn(), SubstraitOperator.IS_NULL,
+                            null, predicate.getArrowType());
+            default ->
+                // For operators we can't simplify, return as NOT operator
+                    new ColumnPredicate(predicate.getColumn(), SubstraitOperator.NOT,
+                            predicate.getValue(), predicate.getArrowType());
+        };
     }
 }
