@@ -197,10 +197,7 @@ public class Block
      */
     public boolean offerValue(String fieldName, int row, Object value, boolean hasQueryPlan)
     {
-        if (hasQueryPlan) {
-            return true;
-        }
-        if (!constraintEvaluator.apply(fieldName, value)) {
+        if (!hasQueryPlan && !constraintEvaluator.apply(fieldName, value)) {
             return false;
         }
         FieldVector vector = getFieldVector(fieldName);
