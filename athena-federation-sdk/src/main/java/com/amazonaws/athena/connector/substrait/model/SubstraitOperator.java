@@ -38,7 +38,9 @@ public enum SubstraitOperator
     AND("AND"),
     OR("OR"),
     NOT("NOT"),
-    NOT_IN("NOT IN");
+    NOT_IN("NOT IN"),
+    NOR("NOR"),
+    NAND("NAND");
 
     private final String symbol;
 

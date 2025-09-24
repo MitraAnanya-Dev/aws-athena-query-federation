@@ -497,27 +497,32 @@ public final class QueryUtils
         if (colPreds == null || colPreds.isEmpty()) {
             return new Document();
         }
+        // Debug
+        System.out.println(">>> convertColumnPredicatesToDoc for column: " + column + ", predicates: " + colPreds);
         // Special handling for universal constraints (none / all)
         for (ColumnPredicate pred : colPreds) {
             if (pred.getOperator() == SubstraitOperator.IS_NULL) {
+                System.out.println("Handling IS_NULL for column: " + column);
                 return documentOf(column, isNullPredicate());
             }
             if (pred.getOperator() == SubstraitOperator.IS_NOT_NULL) {
+                System.out.println("Handling IS_NOT_NULL for column: " + column);
                 return documentOf(column, isNotNullPredicate());
             }
         }
         List<Object> equalValues = new ArrayList<>();
-        List<Object> notEqualValues = new ArrayList<>(); // NEW: collect for $nin fallback
         List<Document> otherPredicates = new ArrayList<>();
         for (ColumnPredicate pred : colPreds) {
             Object value = pred.getValue();
             SubstraitOperator op = pred.getOperator();
+            // Debug
+            System.out.println("Processing predicate: " + pred);
             switch (op) {
                 case EQUAL:
                     equalValues.add(value);
                     break;
                 case NOT_EQUAL:
-                    notEqualValues.add(value); // collect instead of pushing into OR directly
+                    otherPredicates.add(new Document(NOT_EQ_OP, value));
                     break;
                 case GREATER_THAN:
                     otherPredicates.add(new Document(GT_OP, value));
@@ -548,29 +553,38 @@ public final class QueryUtils
                         }
                     }
                     break;
+                // :small_blue_diamond: New cases for NAND and NOR
+                case NAND:
+                    System.out.println("Handling NAND for column group");
+                    List<Document> andConditions = new ArrayList<>();
+                    for (ColumnPredicate child : (List<ColumnPredicate>) value) {
+                        Document childDoc = convertColumnPredicatesToDoc(
+                                child.getColumn(),
+                                Collections.singletonList(child)
+                        );
+                        andConditions.add(childDoc);
+                    }
+                    // NAND = $nor applied to a single $and group
+                    return new Document(NOR_OP, Collections.singletonList(new Document(AND_OP, andConditions)));
+                case NOR:
+                    System.out.println("Handling NOR for column group");
+                    List<Document> orConditions = new ArrayList<>();
+                    for (ColumnPredicate child : (List<ColumnPredicate>) value) {
+                        Document childDoc = convertColumnPredicatesToDoc(
+                                child.getColumn(),
+                                Collections.singletonList(child)
+                        );
+                        orConditions.add(childDoc);
+                    }
+                    // NOR = $nor applied directly on child conditions
+                    return new Document(NOR_OP, orConditions);
                 default:
                     throw new UnsupportedOperationException("Unsupported operator: " + op);
             }
         }
-        // Collapse multiple NOT_EQUAL into $nin
-        if (notEqualValues.size() > 1) {
-            Document ninPredicate;
-            if (column.equals(COLUMN_NAME_ID)) {
-                List<ObjectId> objectIdList = notEqualValues.stream()
-                        .map(v -> new ObjectId(v.toString()))
-                        .collect(Collectors.toList());
-                ninPredicate = new Document(NOTIN_OP, objectIdList);
-            } else {
-                ninPredicate = new Document(NOTIN_OP, notEqualValues);
-            }
-            otherPredicates.add(ninPredicate);
-        }
-        // Single NOT_EQUAL stays as $ne
-        else if (notEqualValues.size() == 1) {
-            otherPredicates.add(new Document(NOT_EQ_OP, notEqualValues.get(0)));
-        }
         // Handle multiple EQUAL values -> $in
         if (equalValues.size() > 1) {
+            System.out.println("Handling multiple EQUAL ($in) for column: " + column);
             Document inPredicate;
             if (column.equals(COLUMN_NAME_ID)) {
                 List<ObjectId> objectIdList = equalValues.stream()
@@ -592,6 +606,7 @@ public final class QueryUtils
         }
         // Single EQUAL
         else if (equalValues.size() == 1) {
+            System.out.println("Handling single EQUAL for column: " + column);
             Object eqValue = equalValues.get(0);
             Document equalPredicate;
             if (column.equals(COLUMN_NAME_ID)) {
@@ -611,12 +626,13 @@ public final class QueryUtils
         }
         // Only non-EQUAL predicates
         else if (!otherPredicates.isEmpty()) {
+            System.out.println("Handling only non-EQUAL predicates for column: " + column);
             if (otherPredicates.size() > 1) {
-                List<Document> andConditions = new ArrayList<>();
-                for (Document pred : otherPredicates) {
-                    andConditions.add(new Document(column, pred));
+                List<Document> orConditions = new ArrayList<>();
+                for (Document predicate : otherPredicates) {
+                    orConditions.add(new Document(column, predicate));
                 }
-                return new Document(AND_OP, andConditions);
+                return new Document(OR_OP, orConditions);
             } else {
                 return documentOf(column, otherPredicates.get(0));
             }
