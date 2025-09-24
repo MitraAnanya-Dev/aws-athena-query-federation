@@ -208,7 +208,6 @@ public class DynamoDBMetadataHandler
         supportedFunctions.add(StandardFunctions.LESS_THAN_OPERATOR_FUNCTION_NAME);
         supportedFunctions.add(StandardFunctions.GREATER_THAN_OR_EQUAL_OPERATOR_FUNCTION_NAME);
         supportedFunctions.add(StandardFunctions.LESS_THAN_OR_EQUAL_OPERATOR_FUNCTION_NAME);
-
         capabilities.put(DataSourceOptimizations.SUPPORTS_COMPLEX_EXPRESSION_PUSHDOWN.withSupportedSubTypes(
                 ComplexExpressionPushdownSubType.SUPPORTED_FUNCTION_EXPRESSION_TYPES
                         .withSubTypeProperties(supportedFunctions.stream()
@@ -656,17 +655,6 @@ public class DynamoDBMetadataHandler
     {
         return String.valueOf(partition);
     }
-
-    /**
-     * Helper class to encapsulate hash key information.
-     */
-    private record HashKeyPredicateInfo(List<Object> values, ArrowType arrowType)
-    {
-        boolean isEmpty()
-        {
-            return values.isEmpty();
-        }
-    }
     
     /**
      * Extracts hash key values and type information from constraints.
@@ -761,5 +749,35 @@ public class DynamoDBMetadataHandler
                 Split.newBuilder(spillLocation, makeEncryptionKey())
                         .applyProperties(qptArguments)
                         .build());
+    }
+
+    /**
+     * Helper class to encapsulate hash key information.
+     */
+    private static final class HashKeyPredicateInfo
+    {
+        private final List<Object> values;
+        private final ArrowType arrowType;
+
+        HashKeyPredicateInfo(List<Object> values, ArrowType arrowType)
+        {
+            this.values = values;
+            this.arrowType = arrowType;
+        }
+
+        List<Object> values()
+        {
+            return values;
+        }
+
+        ArrowType arrowType()
+        {
+            return arrowType;
+        }
+
+        boolean isEmpty()
+        {
+            return values.isEmpty();
+        }
     }
 }
