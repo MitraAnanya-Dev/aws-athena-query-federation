@@ -43,11 +43,10 @@ public final class SubstraitFunctionParser
     {
         // Utility class - prevent instantiation
     }
-
     /**
      * Parses a Substrait expression into a map of column predicates grouped by column name.
      * This method extracts all column predicates from the expression and organizes them by the column they apply to.
-     * 
+     *
      * @param extensionDeclarationList List of function extension declarations from the Substrait plan
      * @param expression The Substrait expression to parse
      * @param columnNames List of column names in the schema for field reference resolution
@@ -64,11 +63,10 @@ public final class SubstraitFunctionParser
         }
         return columnPredicatesMap;
     }
-
     /**
      * Recursively parses a Substrait expression to extract all column predicates.
      * This method flattens logical operations (AND/OR) and extracts individual column predicates.
-     * 
+     *
      * @param extensionDeclarationList List of function extension declarations from the Substrait plan
      * @param expression The Substrait expression to parse
      * @param columnNames List of column names in the schema for field reference resolution
@@ -80,20 +78,16 @@ public final class SubstraitFunctionParser
     {
         List<ColumnPredicate> columnPredicates = new ArrayList<>();
         ScalarFunctionInfo functionInfo = extractScalarFunctionInfo(expression, extensionDeclarationList);
-        
+
         if (functionInfo == null) {
             return columnPredicates;
         }
-
         // Handle NOT operator - it's a unary operator
         if ("not:bool".equals(functionInfo.getFunctionName())) {
-            ColumnPredicate notPredicate = handleNotOperator(functionInfo, extensionDeclarationList, columnNames);
-            if (notPredicate != null) {
-                columnPredicates.add(notPredicate);
-            }
+            List<ColumnPredicate> notPredicates = handleNotOperator(functionInfo, extensionDeclarationList, columnNames);
+            columnPredicates.addAll(notPredicates);
             return columnPredicates;
         }
-
         // Handle logical operators by flattening
         if (isLogicalOperator(functionInfo.getFunctionName())) {
             for (FunctionArgument argument : functionInfo.getArguments()) {
@@ -102,13 +96,11 @@ public final class SubstraitFunctionParser
             }
             return columnPredicates;
         }
-
         // Handle binary comparison operations
         if (functionInfo.getArguments().size() == 2) {
             ColumnPredicate predicate = createBinaryColumnPredicate(functionInfo, columnNames);
             columnPredicates.add(predicate);
         }
-
         // Handle unary operations
         if (functionInfo.getArguments().size() == 1) {
             ColumnPredicate predicate = createUnaryColumnPredicate(functionInfo, columnNames);
@@ -116,11 +108,10 @@ public final class SubstraitFunctionParser
         }
         return columnPredicates;
     }
-
     /**
      * Creates a mapping from function reference anchors to function names.
      * This mapping is used to resolve function references in Substrait expressions.
-     * 
+     *
      * @param extensionDeclarationList List of extension declarations containing function definitions
      * @return A map from function anchor IDs to function names
      */
@@ -136,7 +127,6 @@ public final class SubstraitFunctionParser
         }
         return functionMap;
     }
-
     /**
      * Extracts the column name from a field reference expression.
      */
@@ -146,10 +136,8 @@ public final class SubstraitFunctionParser
             expr =  expr.getCast().getInput();
         }
         int fieldIndex = expr.getSelection().getDirectReference().getStructField().getField();
-
         return schemaNames.get(fieldIndex);
     }
-
     /**
      * Extracts a literal value from an expression, handling possible cast operations.
      * If the expression contains a cast, the underlying literal value is extracted.
@@ -161,7 +149,6 @@ public final class SubstraitFunctionParser
         }
         return SubstraitLiteralConverter.extractLiteralValue(expr);
     }
-
     /**
      * Extracts scalar function information from an expression.
      */
@@ -170,15 +157,15 @@ public final class SubstraitFunctionParser
         if (!expression.hasScalarFunction()) {
             return null;
         }
-        
+
         Expression.ScalarFunction scalarFunction = expression.getScalarFunction();
         Map<Integer, String> functionMap = mapFunctionReferences(extensionDeclarationList);
         String functionName = functionMap.get(scalarFunction.getFunctionReference());
         List<FunctionArgument> arguments = scalarFunction.getArgumentsList();
-        
+
         return new ScalarFunctionInfo(functionName, arguments);
     }
-    
+
     /**
      * Creates a column predicate for unary operations.
      */
@@ -188,7 +175,7 @@ public final class SubstraitFunctionParser
         SubstraitOperator substraitOperator = mapToOperator(functionInfo.getFunctionName());
         return new ColumnPredicate(columnName, substraitOperator, null, null);
     }
-    
+
     /**
      * Creates a column predicate for binary operations.
      */
@@ -199,7 +186,7 @@ public final class SubstraitFunctionParser
         SubstraitOperator substraitOperator = mapToOperator(functionInfo.getFunctionName());
         return new ColumnPredicate(columnName, substraitOperator, value.getLeft(), value.getRight());
     }
-    
+
     /**
      * Checks if a function name represents a logical operator.
      */
@@ -207,11 +194,10 @@ public final class SubstraitFunctionParser
     {
         return "and:bool".equals(functionName) || "or:bool".equals(functionName);
     }
-
     /**
      * Maps Substrait function names to corresponding Operator enum values.
      * This method is mapping only small set of operators, and we will extend this as we need.
-     * 
+     *
      * @param functionName The Substrait function name (e.g., "gt:any_any", "equal:any_any")
      * @return The corresponding Operator enum value
      * @throws UnsupportedOperationException if the function name is not supported
@@ -245,7 +231,6 @@ public final class SubstraitFunctionParser
                 throw new UnsupportedOperationException("Unsupported operator function: " + functionName);
         }
     }
-
     /**
      * Helper class to hold scalar function information.
      */
@@ -253,49 +238,105 @@ public final class SubstraitFunctionParser
     {
         private final String functionName;
         private final List<FunctionArgument> arguments;
-
         public ScalarFunctionInfo(String functionName, List<FunctionArgument> arguments)
         {
             this.functionName = functionName;
             this.arguments = arguments;
         }
-
         public String getFunctionName()
         {
             return functionName;
         }
-
         public List<FunctionArgument> getArguments()
         {
             return arguments;
         }
     }
-
     /**
-     * Handle NOT operator - recursively parse the inner expression and negate it
+     * Handle NOT operator - recursively parse the inner expression and apply De Morgan's laws
      */
-    private static ColumnPredicate handleNotOperator(ScalarFunctionInfo notFunctionInfo,
-                                                     List<SimpleExtensionDeclaration> extensionDeclarationList,
-                                                     List<String> columnNames)
+    private static List<ColumnPredicate> handleNotOperator(ScalarFunctionInfo notFunctionInfo,
+                                                           List<SimpleExtensionDeclaration> extensionDeclarationList,
+                                                           List<String> columnNames)
     {
         if (notFunctionInfo.getArguments().size() != 1) {
-            return null;
+            return new ArrayList<>();
         }
+
         Expression innerExpression = notFunctionInfo.getArguments().get(0).getValue();
+        ScalarFunctionInfo innerFunctionInfo = extractScalarFunctionInfo(innerExpression, extensionDeclarationList);
+
+        // If inner expression is a logical operator, apply De Morgan's laws
+        if (innerFunctionInfo != null && isLogicalOperator(innerFunctionInfo.getFunctionName())) {
+            return applyDeMorgansLaw(notFunctionInfo, innerFunctionInfo, extensionDeclarationList, columnNames);
+        }
+
+        // For non-logical inner expressions, use the original approach
         List<ColumnPredicate> innerPredicates = parseColumnPredicates(extensionDeclarationList, innerExpression, columnNames);
+        List<ColumnPredicate> result = new ArrayList<>();
+
         // Handle NOT IN pattern: NOT(OR(EQUAL, EQUAL, ...)) on the same column
         if (isNotInPattern(innerPredicates)) {
-            return createNotInPredicate(innerPredicates);
+            result.add(createNotInPredicate(innerPredicates));
+            return result;
         }
-        // For simple cases where NOT applies to a single predicate
-        if (innerPredicates.size() == 1) {
-            ColumnPredicate innerPredicate = innerPredicates.get(0);
-            return createNegatedPredicate(innerPredicate);
-        }
-        // Complex NOT operations not yet supported
-        return null;
-    }
 
+        // Apply negation to all inner predicates
+        for (ColumnPredicate innerPredicate : innerPredicates) {
+            result.add(createNegatedPredicate(innerPredicate));
+        }
+
+        return result;
+    }
+    /**
+     * Apply De Morgan's laws to transform NOT(AND/OR) expressions
+     */
+    private static List<ColumnPredicate> applyDeMorgansLaw(ScalarFunctionInfo notFunctionInfo,
+                                                           ScalarFunctionInfo innerFunctionInfo,
+                                                           List<SimpleExtensionDeclaration> extensionDeclarationList,
+                                                           List<String> columnNames)
+    {
+        List<ColumnPredicate> result = new ArrayList<>();
+        String innerFunctionName = innerFunctionInfo.getFunctionName();
+
+        if ("and:bool".equals(innerFunctionName)) {
+            // NOT(A AND B) = (NOT A) OR (NOT B)
+            // For predicate pushdown, we push down both negated predicates
+            // The OR relationship will be handled by the consumer
+            for (FunctionArgument arg : innerFunctionInfo.getArguments()) {
+                // Create a NOT expression for each argument
+                Expression notExpression = createNotExpression(arg.getValue(), notFunctionInfo);
+                List<ColumnPredicate> negatedPredicates = parseColumnPredicates(extensionDeclarationList, notExpression, columnNames);
+                result.addAll(negatedPredicates);
+            }
+        }
+        else if ("or:bool".equals(innerFunctionName)) {
+            // NOT(A OR B) = (NOT A) AND (NOT B)
+            // For predicate pushdown, we push down both negated predicates
+            // The AND relationship will be handled by the consumer
+            for (FunctionArgument arg : innerFunctionInfo.getArguments()) {
+                // Create a NOT expression for each argument
+                Expression notExpression = createNotExpression(arg.getValue(), notFunctionInfo);
+                List<ColumnPredicate> negatedPredicates = parseColumnPredicates(extensionDeclarationList, notExpression, columnNames);
+                result.addAll(negatedPredicates);
+            }
+        }
+
+        return result;
+    }
+    /**
+     * Create a NOT expression wrapper for an inner expression
+     */
+    private static Expression createNotExpression(Expression innerExpression, ScalarFunctionInfo notFunctionInfo)
+    {
+        // Reuse the same function reference from the original NOT operation
+        return Expression.newBuilder()
+                .setScalarFunction(Expression.ScalarFunction.newBuilder()
+                        .setFunctionReference(notFunctionInfo.getArguments().get(0).getValue().getScalarFunction().getFunctionReference())
+                        .addArguments(FunctionArgument.newBuilder().setValue(innerExpression))
+                        .build())
+                .build();
+    }
     /**
      * Check if this is a NOT IN pattern: multiple EQUAL predicates on the same column
      */
@@ -313,7 +354,6 @@ public final class SubstraitFunctionParser
         }
         return true;
     }
-
     /**
      * Create a NOT_IN predicate from multiple EQUAL predicates
      */
@@ -329,7 +369,6 @@ public final class SubstraitFunctionParser
         }
         return new ColumnPredicate(column, SubstraitOperator.NOT_IN, excludedValues, null);
     }
-
     /**
      * Create a negated version of a predicate
      */

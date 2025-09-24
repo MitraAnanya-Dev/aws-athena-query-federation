@@ -380,6 +380,119 @@ public final class QueryUtils
 //        return new Document();
 //    }
 
+//    private static Document convertColumnPredicatesToDoc(String column, List<ColumnPredicate> colPreds) {
+//        if (colPreds == null || colPreds.isEmpty()) {
+//            return new Document();
+//        }
+//        // Special handling for universal constraints (none / all)
+//        for (ColumnPredicate pred : colPreds) {
+//            if (pred.getOperator() == SubstraitOperator.IS_NULL) {
+//                return documentOf(column, isNullPredicate());
+//            }
+//            if (pred.getOperator() == SubstraitOperator.IS_NOT_NULL) {
+//                return documentOf(column, isNotNullPredicate());
+//            }
+//        }
+//        List<Object> equalValues = new ArrayList<>();
+//        List<Document> otherPredicates = new ArrayList<>();
+//        for (ColumnPredicate pred : colPreds) {
+//            Object value = pred.getValue();
+//            SubstraitOperator op = pred.getOperator();
+//            switch (op) {
+//                case EQUAL:
+//                    equalValues.add(value);
+//                    break;
+//                case NOT_EQUAL:
+//                    otherPredicates.add(new Document(NOT_EQ_OP, value));
+//                    break;
+//                case GREATER_THAN:
+//                    otherPredicates.add(new Document(GT_OP, value));
+//                    break;
+//                case GREATER_THAN_OR_EQUAL_TO:
+//                    otherPredicates.add(new Document(GTE_OP, value));
+//                    break;
+//                case LESS_THAN:
+//                    otherPredicates.add(new Document(LT_OP, value));
+//                    break;
+//                case LESS_THAN_OR_EQUAL_TO:
+//                    otherPredicates.add(new Document(LTE_OP, value));
+//                    break;
+//                case NOT_IN:
+//                    if (value instanceof List) {
+//                        List<Object> notInValues = (List<Object>) value;
+//                        if (!notInValues.isEmpty()) {
+//                            Document notInPredicate;
+//                            if (column.equals(COLUMN_NAME_ID)) {
+//                                List<ObjectId> objectIdList = notInValues.stream()
+//                                        .map(v -> new ObjectId(v.toString()))
+//                                        .collect(Collectors.toList());
+//                                notInPredicate = new Document(NOTIN_OP, objectIdList);
+//                            } else {
+//                                notInPredicate = new Document(NOTIN_OP, notInValues);
+//                            }
+//                            otherPredicates.add(notInPredicate);
+//                        }
+//                    }
+//                    break;
+//                default:
+//                    throw new UnsupportedOperationException("Unsupported operator: " + op);
+//            }
+//        }
+//        // Handle multiple EQUAL values -> $in
+//        if (equalValues.size() > 1) {
+//            Document inPredicate;
+//            if (column.equals(COLUMN_NAME_ID)) {
+//                List<ObjectId> objectIdList = equalValues.stream()
+//                        .map(v -> new ObjectId(v.toString()))
+//                        .collect(Collectors.toList());
+//                inPredicate = new Document(IN_OP, objectIdList);
+//            } else {
+//                inPredicate = new Document(IN_OP, equalValues);
+//            }
+//            if (!otherPredicates.isEmpty()) {
+//                List<Document> andConditions = new ArrayList<>();
+//                andConditions.add(new Document(column, inPredicate));
+//                for (Document otherPred : otherPredicates) {
+//                    andConditions.add(new Document(column, otherPred));
+//                }
+//                return new Document(AND_OP, andConditions);
+//            }
+//            return documentOf(column, inPredicate);
+//        }
+//        // Single EQUAL
+//        else if (equalValues.size() == 1) {
+//            Object eqValue = equalValues.get(0);
+//            Document equalPredicate;
+//            if (column.equals(COLUMN_NAME_ID)) {
+//                equalPredicate = new Document(EQ_OP, new ObjectId(eqValue.toString()));
+//            } else {
+//                equalPredicate = new Document(EQ_OP, eqValue);
+//            }
+//            if (!otherPredicates.isEmpty()) {
+//                List<Document> andConditions = new ArrayList<>();
+//                andConditions.add(new Document(column, equalPredicate));
+//                for (Document otherPred : otherPredicates) {
+//                    andConditions.add(new Document(column, otherPred));
+//                }
+//                return new Document(AND_OP, andConditions);
+//            }
+//            return documentOf(column, equalPredicate);
+//        }
+//        // Only non-EQUAL predicates
+//        else if (!otherPredicates.isEmpty()) {
+//            if (otherPredicates.size() > 1) {
+//                List<Document> orConditions = new ArrayList<>();
+//                for (Document predicate : otherPredicates) {
+//                    orConditions.add(new Document(column, predicate));
+//                }
+//                return new Document(OR_OP, orConditions);
+//            } else {
+//                return documentOf(column, otherPredicates.get(0));
+//            }
+//        }
+//        return new Document();
+//    }
+
     private static Document convertColumnPredicatesToDoc(String column, List<ColumnPredicate> colPreds) {
         if (colPreds == null || colPreds.isEmpty()) {
             return new Document();
@@ -394,6 +507,7 @@ public final class QueryUtils
             }
         }
         List<Object> equalValues = new ArrayList<>();
+        List<Object> notEqualValues = new ArrayList<>(); // NEW: collect for $nin fallback
         List<Document> otherPredicates = new ArrayList<>();
         for (ColumnPredicate pred : colPreds) {
             Object value = pred.getValue();
@@ -403,7 +517,7 @@ public final class QueryUtils
                     equalValues.add(value);
                     break;
                 case NOT_EQUAL:
-                    otherPredicates.add(new Document(NOT_EQ_OP, value));
+                    notEqualValues.add(value); // collect instead of pushing into OR directly
                     break;
                 case GREATER_THAN:
                     otherPredicates.add(new Document(GT_OP, value));
@@ -437,6 +551,23 @@ public final class QueryUtils
                 default:
                     throw new UnsupportedOperationException("Unsupported operator: " + op);
             }
+        }
+        // Collapse multiple NOT_EQUAL into $nin
+        if (notEqualValues.size() > 1) {
+            Document ninPredicate;
+            if (column.equals(COLUMN_NAME_ID)) {
+                List<ObjectId> objectIdList = notEqualValues.stream()
+                        .map(v -> new ObjectId(v.toString()))
+                        .collect(Collectors.toList());
+                ninPredicate = new Document(NOTIN_OP, objectIdList);
+            } else {
+                ninPredicate = new Document(NOTIN_OP, notEqualValues);
+            }
+            otherPredicates.add(ninPredicate);
+        }
+        // Single NOT_EQUAL stays as $ne
+        else if (notEqualValues.size() == 1) {
+            otherPredicates.add(new Document(NOT_EQ_OP, notEqualValues.get(0)));
         }
         // Handle multiple EQUAL values -> $in
         if (equalValues.size() > 1) {
@@ -481,11 +612,11 @@ public final class QueryUtils
         // Only non-EQUAL predicates
         else if (!otherPredicates.isEmpty()) {
             if (otherPredicates.size() > 1) {
-                List<Document> orConditions = new ArrayList<>();
-                for (Document predicate : otherPredicates) {
-                    orConditions.add(new Document(column, predicate));
+                List<Document> andConditions = new ArrayList<>();
+                for (Document pred : otherPredicates) {
+                    andConditions.add(new Document(column, pred));
                 }
-                return new Document(OR_OP, orConditions);
+                return new Document(AND_OP, andConditions);
             } else {
                 return documentOf(column, otherPredicates.get(0));
             }
