@@ -681,60 +681,6 @@ public class DocDBRecordHandlerTest
         }
     }
 
-    private Expression createFieldReference(int fieldIndex)
-    {
-        return Expression.newBuilder()
-                .setSelection(Expression.FieldReference.newBuilder()
-                        .setDirectReference(Expression.ReferenceSegment.newBuilder()
-                                .setStructField(Expression.ReferenceSegment.StructField.newBuilder()
-                                        .setField(fieldIndex)
-                                        .build())
-                                .build())
-                        .build())
-                .build();
-    }
-
-    private String buildBase64SubstraitPlan(int limit, boolean withOrderBy, int... sortFieldIndexes)
-    {
-        Rel inputRel = Rel.newBuilder()
-                .setRead(ReadRel.newBuilder().build()) // base scan placeholder
-                .build();
-
-        if (withOrderBy && sortFieldIndexes != null && sortFieldIndexes.length > 0) {
-            // Build SortRel first
-            SortRel.Builder sortBuilder = SortRel.newBuilder();
-            for (int idx : sortFieldIndexes) {
-                SortField sortField = SortField.newBuilder()
-                        .setExpr(createFieldReference(idx))
-                        .setDirection(SortField.SortDirection.SORT_DIRECTION_ASC_NULLS_FIRST)
-                        .build();
-                sortBuilder.addSorts(sortField);
-            }
-            sortBuilder.setInput(inputRel);
-            inputRel = Rel.newBuilder().setSort(sortBuilder.build()).build();
-        }
-
-        // Wrap the input (sort or plain read) inside FetchRel for LIMIT
-        FetchRel fetchRel = FetchRel.newBuilder()
-                .setInput(inputRel)
-                .setCount(limit)
-                .build();
-
-        RelRoot relRoot = RelRoot.newBuilder()
-                .setInput(Rel.newBuilder().setFetch(fetchRel).build())
-                .build();
-
-        PlanRel planRel = PlanRel.newBuilder()
-                .setRoot(relRoot)
-                .build();
-
-        Plan plan = Plan.newBuilder()
-                .addRelations(planRel)
-                .build();
-
-        return Base64.getEncoder().encodeToString(plan.toByteArray());
-    }
-
     private QueryPlan getQueryPlan(String base64Plan)
     {
         return new QueryPlan("1.0", base64Plan);
