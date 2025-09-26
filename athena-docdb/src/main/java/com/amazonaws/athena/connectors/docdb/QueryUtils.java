@@ -48,6 +48,7 @@ import com.amazonaws.athena.connector.substrait.model.SubstraitRelModel;
 import io.substrait.proto.Plan;
 import io.substrait.proto.SimpleExtensionDeclaration;
 import org.apache.arrow.vector.complex.reader.FieldReader;
+import org.apache.arrow.vector.types.pojo.ArrowType;
 import org.apache.arrow.vector.types.pojo.Field;
 import org.apache.arrow.vector.types.pojo.Schema;
 import org.apache.arrow.vector.util.Text;
@@ -432,7 +433,7 @@ public final class QueryUtils
         List<Object> equalValues = new ArrayList<>();
         List<Document> otherPredicates = new ArrayList<>();
         for (ColumnPredicate pred : colPreds) {
-            Object value = pred.getValue();
+            Object value = convertValueForDateTimeField(pred);
             SubstraitOperator op = pred.getOperator();
             // Debug
             System.out.println("Processing predicate: " + pred);
@@ -596,6 +597,24 @@ public final class QueryUtils
             }
         }
         return new Document();
+    }
+
+    /**
+     * Converts NumberLong values to Date objects for datetime fields
+     */
+    private static Object convertValueForDateTimeField(ColumnPredicate pred)
+    {
+        Object value = pred.getValue();
+        // Check if this is a datetime field and value is NumberLong
+        if (value instanceof Long && pred.getArrowType() instanceof ArrowType.Timestamp) {
+            Long epochValue = (Long) value;
+            // Convert microseconds to milliseconds (divide by 1000)
+            Long milliseconds = epochValue / 1000;
+            // Convert to Date object for MongoDB ISODate format
+            Date mongoDate = new Date(milliseconds);
+            return mongoDate;
+        }
+        return value;
     }
 
     private static Document documentOf(String key, Object value)
