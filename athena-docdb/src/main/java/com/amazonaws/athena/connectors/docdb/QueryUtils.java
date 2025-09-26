@@ -566,10 +566,29 @@ public final class QueryUtils
         // Only non-EQUAL predicates
         else if (!otherPredicates.isEmpty()) {
             System.out.println("Handling only non-EQUAL predicates for column: " + column);
-            if (otherPredicates.size() > 1) {
+            
+            // Check if we have NOT_EQUAL predicates that need null exclusion
+            boolean hasNotEqual = otherPredicates.stream()
+                    .anyMatch(doc -> doc.containsKey(NOT_EQ_OP));
+            
+            if (hasNotEqual && otherPredicates.size() == 1) {
+                // Single NOT_EQUAL case - add null exclusion
+                Document notEqualPred = otherPredicates.get(0);
+                Document nullExclusion = new Document(column, isNotNullPredicate());
+                return new Document(AND_OP, Arrays.asList(nullExclusion, new Document(column, notEqualPred)));
+            }
+            else if (otherPredicates.size() > 1) {
                 List<Document> orConditions = new ArrayList<>();
                 for (Document predicate : otherPredicates) {
-                    orConditions.add(new Document(column, predicate));
+                    if (predicate.containsKey(NOT_EQ_OP)) {
+                        // Add null exclusion only for NOT_EQUAL predicates
+                        Document nullExclusion = new Document(column, isNotNullPredicate());
+                        Document notEqualCondition = new Document(column, predicate);
+                        orConditions.add(new Document(AND_OP, Arrays.asList(nullExclusion, notEqualCondition)));
+                    } else {
+                        // Keep other predicates unchanged
+                        orConditions.add(new Document(column, predicate));
+                    }
                 }
                 return new Document(OR_OP, orConditions);
             } else {
