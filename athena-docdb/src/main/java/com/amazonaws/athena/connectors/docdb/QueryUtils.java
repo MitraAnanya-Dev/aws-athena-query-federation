@@ -56,6 +56,7 @@ import org.bson.Document;
 import org.bson.json.JsonParseException;
 import org.bson.types.ObjectId;
 
+import java.math.BigDecimal;
 import java.util.*;
 import java.util.stream.Collectors;
 
@@ -442,19 +443,19 @@ public final class QueryUtils
                     equalValues.add(value);
                     break;
                 case NOT_EQUAL:
-                    otherPredicates.add(new Document(NOT_EQ_OP, value));
+                    otherPredicates.add(new Document(NOT_EQ_OP, convertSubstraitValue(value)));
                     break;
                 case GREATER_THAN:
-                    otherPredicates.add(new Document(GT_OP, value));
+                    otherPredicates.add(new Document(GT_OP, convertSubstraitValue(value)));
                     break;
                 case GREATER_THAN_OR_EQUAL_TO:
-                    otherPredicates.add(new Document(GTE_OP, value));
+                    otherPredicates.add(new Document(GTE_OP, convertSubstraitValue(value)));
                     break;
                 case LESS_THAN:
-                    otherPredicates.add(new Document(LT_OP, value));
+                    otherPredicates.add(new Document(LT_OP, convertSubstraitValue(value)));
                     break;
                 case LESS_THAN_OR_EQUAL_TO:
-                    otherPredicates.add(new Document(LTE_OP, value));
+                    otherPredicates.add(new Document(LTE_OP, convertSubstraitValue(value)));
                     break;
                 case NOT_IN:
                     if (value instanceof List) {
@@ -645,6 +646,16 @@ public final class QueryUtils
     {
         if (value instanceof Text) {
             return ((Text) value).toString();
+        }
+        return value;
+    }
+
+    private static Object convertSubstraitValue(Object value)
+    {
+        if (value instanceof Text) {
+            return ((Text) value).toString();
+        } else if (value instanceof BigDecimal) {
+            return ((BigDecimal) value).doubleValue();
         }
         return value;
     }
