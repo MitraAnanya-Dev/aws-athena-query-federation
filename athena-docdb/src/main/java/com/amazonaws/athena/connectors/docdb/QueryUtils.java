@@ -476,27 +476,47 @@ public final class QueryUtils
                 case NAND:
                     System.out.println("Handling NAND for column group");
                     List<Document> andConditions = new ArrayList<>();
+                    Set<String> nandColumns = new HashSet<>();
                     for (ColumnPredicate child : (List<ColumnPredicate>) value) {
                         Document childDoc = convertColumnPredicatesToDoc(
                                 child.getColumn(),
                                 Collections.singletonList(child)
                         );
                         andConditions.add(childDoc);
+                        if (child.getColumn() != null) {
+                            nandColumns.add(child.getColumn());
+                        }
                     }
-                    // NAND = $nor applied to a single $and group
-                    return new Document(NOR_OP, Collections.singletonList(new Document(AND_OP, andConditions)));
+                    // NAND = $nor applied to a single $and group, with null exclusion for filtered columns
+                    Document nandCondition = new Document(NOR_OP, Collections.singletonList(new Document(AND_OP, andConditions)));
+                    List<Document> nandFinalConditions = new ArrayList<>();
+                    for (String col : nandColumns) {
+                        nandFinalConditions.add(new Document(col, isNotNullPredicate()));
+                    }
+                    nandFinalConditions.add(nandCondition);
+                    return new Document(AND_OP, nandFinalConditions);
                 case NOR:
                     System.out.println("Handling NOR for column group");
                     List<Document> orConditions = new ArrayList<>();
+                    Set<String> norColumns = new HashSet<>();
                     for (ColumnPredicate child : (List<ColumnPredicate>) value) {
                         Document childDoc = convertColumnPredicatesToDoc(
                                 child.getColumn(),
                                 Collections.singletonList(child)
                         );
                         orConditions.add(childDoc);
+                        if (child.getColumn() != null) {
+                            norColumns.add(child.getColumn());
+                        }
                     }
-                    // NOR = $nor applied directly on child conditions
-                    return new Document(NOR_OP, orConditions);
+                    // NOR = $nor applied directly on child conditions, with null exclusion for filtered columns
+                    Document norCondition = new Document(NOR_OP, orConditions);
+                    List<Document> norFinalConditions = new ArrayList<>();
+                    for (String col : norColumns) {
+                        norFinalConditions.add(new Document(col, isNotNullPredicate()));
+                    }
+                    norFinalConditions.add(norCondition);
+                    return new Document(AND_OP, norFinalConditions);
                 default:
                     throw new UnsupportedOperationException("Unsupported operator: " + op);
             }
