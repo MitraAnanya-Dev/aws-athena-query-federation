@@ -42,6 +42,7 @@ import com.amazonaws.athena.connector.lambda.domain.predicate.ValueSet;
 import com.amazonaws.athena.connector.substrait.SubstraitFunctionParser;
 import com.amazonaws.athena.connector.substrait.SubstraitMetadataParser;
 import com.amazonaws.athena.connector.substrait.model.ColumnPredicate;
+import com.amazonaws.athena.connector.substrait.model.LogicalExpression;
 import com.amazonaws.athena.connector.substrait.model.SubstraitOperator;
 import com.amazonaws.athena.connector.substrait.model.SubstraitRelModel;
 import io.substrait.proto.Plan;
@@ -124,6 +125,68 @@ public final class QueryUtils
         }
 
         return query;
+    }
+
+    /**
+     * Converts a LogicalExpression tree to MongoDB filter Document while preserving logical structure
+     */
+    public static Document makeQueryFromLogicalExpression(LogicalExpression expression)
+    {
+        System.out.println(">>> makeQueryFromLogicalExpression called");
+        if (expression == null) {
+            System.out.println(">>> expression is null, returning empty document");
+            return new Document();
+        }
+
+        System.out.println(">>> Expression operator: " + expression.getOperator() + ", isLeaf: " + expression.isLeaf());
+
+        if (expression.isLeaf()) {
+            // Convert leaf predicate to MongoDB document
+            ColumnPredicate predicate = expression.getLeafPredicate();
+            System.out.println(">>> Converting leaf predicate: " + predicate);
+            Document result = convertColumnPredicatesToDoc(predicate.getColumn(), 
+                Collections.singletonList(predicate));
+            System.out.println(">>> Leaf result: " + result.toJson());
+            return result;
+        }
+
+        // Handle logical operators
+        System.out.println(">>> Processing " + expression.getChildren().size() + " child expressions");
+        List<Document> childDocuments = new ArrayList<>();
+        for (LogicalExpression child : expression.getChildren()) {
+            Document childDoc = makeQueryFromLogicalExpression(child);
+            if (childDoc != null && !childDoc.isEmpty()) {
+                childDocuments.add(childDoc);
+                System.out.println(">>> Added child document: " + childDoc.toJson());
+            }
+        }
+
+        if (childDocuments.isEmpty()) {
+            System.out.println(">>> No child documents, returning empty");
+            return new Document();
+        }
+        if (childDocuments.size() == 1) {
+            System.out.println(">>> Single child document, returning: " + childDocuments.get(0).toJson());
+            return childDocuments.get(0);
+        }
+
+        // Apply logical operator
+        System.out.println(">>> Applying logical operator: " + expression.getOperator());
+        Document result;
+        switch (expression.getOperator()) {
+            case AND:
+                result = new Document(AND_OP, childDocuments);
+                break;
+            case OR:
+                result = new Document(OR_OP, childDocuments);
+                break;
+            default:
+                // For other operators, default to OR
+                System.out.println(">>> Unknown operator, defaulting to OR");
+                result = new Document(OR_OP, childDocuments);
+        }
+        System.out.println(">>> Final logical result: " + result.toJson());
+        return result;
     }
 
     /**
@@ -251,6 +314,60 @@ public final class QueryUtils
         catch (JsonParseException e) {
             throw new IllegalArgumentException("Can't parse 'filter' argument as json", e);
         }
+    }
+
+    /**
+     * Enhanced query builder that tries tree-based approach first, then falls back to flattened approach
+     */
+    public static Document makeEnhancedQueryFromPlan(Plan plan)
+    {
+        System.out.println(">>> makeEnhancedQueryFromPlan called");
+        if (plan == null || plan.getRelationsList().isEmpty()) {
+            System.out.println(">>> Plan is null or empty, returning empty document");
+            return new Document();
+        }
+
+        SubstraitRelModel substraitRelModel = SubstraitRelModel.buildSubstraitRelModel(
+                plan.getRelations(0).getRoot().getInput());
+        if (substraitRelModel.getFilterRel() == null) {
+            System.out.println(">>> No filter relation found, returning empty document");
+            return new Document();
+        }
+
+        List<SimpleExtensionDeclaration> extensionDeclarations = plan.getExtensionsList();
+        List<String> tableColumns = SubstraitMetadataParser.getTableColumns(substraitRelModel);
+        System.out.println(">>> Table columns: " + tableColumns);
+
+        // Try tree-based approach first
+        try {
+            System.out.println(">>> Attempting tree-based parsing");
+            LogicalExpression logicalExpr = SubstraitFunctionParser.parseLogicalExpression(
+                    extensionDeclarations,
+                    substraitRelModel.getFilterRel().getCondition(),
+                    tableColumns);
+            
+            if (logicalExpr != null) {
+                System.out.println(">>> Tree-based parsing successful, operator: " + logicalExpr.getOperator() + ", hasComplexLogic: " + logicalExpr.hasComplexLogic());
+                Document result = makeQueryFromLogicalExpression(logicalExpr);
+                System.out.println(">>> Tree-based result: " + result.toJson());
+                return result;
+            } else {
+                System.out.println(">>> Tree-based parsing returned null");
+            }
+        } catch (Exception e) {
+            System.out.println(">>> Tree-based parsing failed: " + e.getMessage());
+            e.printStackTrace();
+        }
+
+        // Fall back to existing approach
+        System.out.println(">>> Falling back to existing flattened approach");
+        Map<String, List<ColumnPredicate>> predicates = SubstraitFunctionParser.getColumnPredicatesMap(
+                extensionDeclarations,
+                substraitRelModel.getFilterRel().getCondition(),
+                tableColumns);
+        Document result = makeQueryFromPlan(predicates);
+        System.out.println(">>> Fallback result: " + result.toJson());
+        return result;
     }
 
     /**

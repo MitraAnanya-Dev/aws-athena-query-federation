@@ -207,8 +207,15 @@ public class DocDBRecordHandler
                     System.out.println();
                 }
                 // ---------
-                query = QueryUtils.makeQueryFromPlan(columnPredicateMap);
-                System.out.println("made query with plan: " + query.toJson());
+                // Try enhanced tree-based approach first, fall back to existing approach
+                try {
+                    query = QueryUtils.makeEnhancedQueryFromPlan(plan);
+                    System.out.println("made enhanced query with plan: " + query.toJson());
+                } catch (Exception e) {
+                    System.out.println("Enhanced query failed, using fallback: " + e.getMessage());
+                    query = QueryUtils.makeQueryFromPlan(columnPredicateMap);
+                    System.out.println("made fallback query with plan: " + query.toJson());
+                }
             }
             else {
                 query = QueryUtils.makeQuery(recordsRequest.getSchema(), recordsRequest.getConstraints().getSummary());

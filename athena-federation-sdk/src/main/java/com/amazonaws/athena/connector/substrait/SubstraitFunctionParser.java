@@ -20,6 +20,7 @@
 package com.amazonaws.athena.connector.substrait;
 
 import com.amazonaws.athena.connector.substrait.model.ColumnPredicate;
+import com.amazonaws.athena.connector.substrait.model.LogicalExpression;
 import com.amazonaws.athena.connector.substrait.model.SubstraitOperator;
 import io.substrait.proto.Expression;
 import io.substrait.proto.FunctionArgument;
@@ -115,6 +116,65 @@ public final class SubstraitFunctionParser
             columnPredicates.add(predicate);
         }
         return columnPredicates;
+    }
+
+    /**
+     * Parses a Substrait expression into a logical expression tree that preserves AND/OR hierarchy.
+     * This method maintains the original logical structure instead of flattening it.
+     * 
+     * @param extensionDeclarationList List of function extension declarations from the Substrait plan
+     * @param expression The Substrait expression to parse
+     * @param columnNames List of column names in the schema for field reference resolution
+     * @return LogicalExpression tree preserving the original logical structure
+     */
+    public static LogicalExpression parseLogicalExpression(List<SimpleExtensionDeclaration> extensionDeclarationList,
+                                                          Expression expression,
+                                                          List<String> columnNames)
+    {
+        System.out.println(">>> parseLogicalExpression called");
+        ScalarFunctionInfo functionInfo = extractScalarFunctionInfo(expression, extensionDeclarationList);
+        
+        if (functionInfo == null) {
+            System.out.println(">>> functionInfo is null, returning null");
+            return null;
+        }
+
+        System.out.println(">>> Function name: " + functionInfo.getFunctionName());
+
+        // Handle logical operators by building tree structure
+        if (isLogicalOperator(functionInfo.getFunctionName())) {
+            System.out.println(">>> Handling logical operator: " + functionInfo.getFunctionName());
+            List<LogicalExpression> childExpressions = new ArrayList<>();
+            for (FunctionArgument argument : functionInfo.getArguments()) {
+                LogicalExpression childExpr = parseLogicalExpression(extensionDeclarationList, argument.getValue(), columnNames);
+                if (childExpr != null) {
+                    childExpressions.add(childExpr);
+                    System.out.println(">>> Added child expression");
+                }
+            }
+            SubstraitOperator operator = mapToOperator(functionInfo.getFunctionName());
+            System.out.println(">>> Created logical expression with operator: " + operator + ", children: " + childExpressions.size());
+            return new LogicalExpression(operator, childExpressions);
+        }
+
+        // Handle binary comparison operations
+        if (functionInfo.getArguments().size() == 2) {
+            System.out.println(">>> Handling binary operation");
+            ColumnPredicate predicate = createBinaryColumnPredicate(functionInfo, columnNames);
+            System.out.println(">>> Created binary predicate: " + predicate);
+            return new LogicalExpression(predicate);
+        }
+
+        // Handle unary operations
+        if (functionInfo.getArguments().size() == 1) {
+            System.out.println(">>> Handling unary operation");
+            ColumnPredicate predicate = createUnaryColumnPredicate(functionInfo, columnNames);
+            System.out.println(">>> Created unary predicate: " + predicate);
+            return new LogicalExpression(predicate);
+        }
+        
+        System.out.println(">>> No matching operation found, returning null");
+        return null;
     }
 
     /**
