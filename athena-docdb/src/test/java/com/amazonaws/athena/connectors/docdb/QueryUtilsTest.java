@@ -40,6 +40,7 @@ import org.junit.jupiter.params.provider.MethodSource;
 
 import java.util.Arrays;
 import java.util.Collections;
+import java.util.Date;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
@@ -246,6 +247,34 @@ public class QueryUtilsTest
                 // String values
                 Arguments.of(Arrays.asList("a", "b"), Arrays.asList("a", "b"))
         );
+    }
+
+    @Test
+    public void testConvertColumnPredicatesToDocWithDateTimeField()
+    {
+        Long microsecondEpoch = 1378069315000000L;
+
+        ColumnPredicate predicate = new ColumnPredicate(
+                "timestamp_field",
+                SubstraitOperator.EQUAL,
+                microsecondEpoch,
+                new ArrowType.Timestamp(org.apache.arrow.vector.types.TimeUnit.MILLISECOND, null)
+        );
+
+        Map<String, List<ColumnPredicate>> predicates = new HashMap<>();
+        predicates.put("timestamp_field", Collections.singletonList(predicate));
+
+        Document result = QueryUtils.makeQueryFromPlan(predicates);
+
+        assertTrue("Result should contain timestamp_field", result.containsKey("timestamp_field"));
+        Object timestampValue = result.get("timestamp_field");
+        assertTrue("Timestamp value should be a Document", timestampValue instanceof Document);
+
+        Document timestampDoc = (Document) timestampValue;
+        assertTrue("Should contain $eq operator", timestampDoc.containsKey("$eq"));
+
+        Object eqValue = timestampDoc.get("$eq");
+        assertTrue("Converted value should be a Date", eqValue instanceof Date);
     }
 
     private static Stream<Arguments> mixedPredicatesProvider()
