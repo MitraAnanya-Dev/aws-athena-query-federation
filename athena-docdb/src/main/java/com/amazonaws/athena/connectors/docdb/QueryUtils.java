@@ -48,6 +48,7 @@ import com.amazonaws.athena.connector.substrait.model.SubstraitRelModel;
 import io.substrait.proto.Plan;
 import io.substrait.proto.SimpleExtensionDeclaration;
 import org.apache.arrow.vector.complex.reader.FieldReader;
+import org.apache.arrow.vector.types.pojo.ArrowType;
 import org.apache.arrow.vector.types.pojo.Field;
 import org.apache.arrow.vector.types.pojo.Schema;
 import org.apache.arrow.vector.util.Text;
@@ -55,6 +56,7 @@ import org.bson.Document;
 import org.bson.json.JsonParseException;
 import org.bson.types.ObjectId;
 
+import java.math.BigDecimal;
 import java.util.*;
 import java.util.stream.Collectors;
 
@@ -432,7 +434,7 @@ public final class QueryUtils
         List<Object> equalValues = new ArrayList<>();
         List<Document> otherPredicates = new ArrayList<>();
         for (ColumnPredicate pred : colPreds) {
-            Object value = pred.getValue();
+            Object value = convertSubstraitValue(pred);
             SubstraitOperator op = pred.getOperator();
             // Debug
             System.out.println("Processing predicate: " + pred);
@@ -626,6 +628,29 @@ public final class QueryUtils
     {
         if (value instanceof Text) {
             return ((Text) value).toString();
+        }
+        return value;
+    }
+
+    /**
+     * Converts NumberLong values to Date objects for datetime fields
+     */
+    private static Object convertSubstraitValue(ColumnPredicate pred)
+    {
+        Object value = pred.getValue();
+        // Check if this is a datetime field and value is NumberLong
+        if (value instanceof Long && pred.getArrowType() instanceof ArrowType.Timestamp) {
+            Long epochValue = (Long) value;
+            // Convert microseconds to milliseconds (divide by 1000)
+            Long milliseconds = epochValue / 1000;
+            // Convert to Date object for MongoDB ISODate format
+            return new Date(milliseconds);
+        }
+        else if (value instanceof Text) {
+            return ((Text) value).toString();
+        }
+        else if (value instanceof BigDecimal) {
+            return ((BigDecimal) value).doubleValue();
         }
         return value;
     }
