@@ -141,6 +141,16 @@ public final class SubstraitFunctionParser
 
         System.out.println(">>> Function name: " + functionInfo.getFunctionName());
 
+        // Handle NOT operator - same logic as in parseColumnPredicates
+        if ("not:bool".equals(functionInfo.getFunctionName())) {
+            System.out.println(">>> Handling NOT operator in parseLogicalExpression");
+            ColumnPredicate notPredicate = handleNotOperator(functionInfo, extensionDeclarationList, columnNames);
+            if (notPredicate != null) {
+                return new LogicalExpression(notPredicate);
+            }
+            return null;
+        }
+
         // Handle logical operators by building tree structure
         if (isLogicalOperator(functionInfo.getFunctionName())) {
             System.out.println(">>> Handling logical operator: " + functionInfo.getFunctionName());
