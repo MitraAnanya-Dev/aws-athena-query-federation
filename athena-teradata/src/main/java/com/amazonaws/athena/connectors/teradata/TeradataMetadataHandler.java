@@ -153,6 +153,8 @@ public class TeradataMetadataHandler extends JdbcMetadataHandler
         ));
 
         jdbcQueryPassthrough.addQueryPassthroughCapabilityIfEnabled(capabilities, configOptions);
+        ImmutableMap<String, List<OptimizationSubType>> capabilitiesResponse = capabilities.build();
+        System.out.println("capabilitiesResponse: " + capabilitiesResponse);
         return new GetDataSourceCapabilitiesResponse(request.getCatalogName(), capabilities.build());
     }
 
@@ -180,13 +182,15 @@ public class TeradataMetadataHandler extends JdbcMetadataHandler
                               QueryStatusChecker queryStatusChecker)
             throws Exception
     {
-        LOGGER.info("{}: Schema {}, table {}", getTableLayoutRequest.getQueryId(), getTableLayoutRequest.getTableName().getSchemaName(),
+        System.out.println("In getPartitions: {}: Schema {}, table {}" + getTableLayoutRequest.getQueryId() + " " + getTableLayoutRequest.getTableName().getSchemaName() + " " +
                 getTableLayoutRequest.getTableName().getTableName());
         final String getPartitionsQuery = "Select DISTINCT partition FROM " + getTableLayoutRequest.getTableName().getSchemaName() + "." +
                 getTableLayoutRequest.getTableName().getTableName() + " where 1= ?";
+        System.out.println("getPartitionsQuery: " + getPartitionsQuery);
         boolean viewFlag = false;
         //Check if input table is a view
         List<String> viewparameters = Arrays.asList(getTableLayoutRequest.getTableName().getSchemaName(), getTableLayoutRequest.getTableName().getTableName());
+        System.out.println("viewparameters: " + viewparameters);
         try (Connection connection = getJdbcConnectionFactory().getConnection(getCredentialProvider())) {
             try (PreparedStatement preparedStatement = new PreparedStatementBuilder().withConnection(connection).withQuery(VIEW_CHECK_QUERY).withParameters(viewparameters).build();
                  ResultSet resultSet = preparedStatement.executeQuery()) {
@@ -198,6 +202,7 @@ public class TeradataMetadataHandler extends JdbcMetadataHandler
         }
         //if the input table is a view , there will be single split
         if (viewFlag) {
+            System.out.println("Table is a view. Single split.");
             blockWriter.writeRows((Block block, int rowNum) -> {
                 block.setValue(BLOCK_PARTITION_COLUMN_NAME, rowNum, ALL_PARTITIONS);
                 return 1;
@@ -211,14 +216,17 @@ public class TeradataMetadataHandler extends JdbcMetadataHandler
              where there are huge partitions and query times out. If appropriate predicate filter is applied , then data will be fetched
              without query getting timed out.
             */
+            System.out.println("nonPartitionApproach");
             boolean nonPartitionApproach = useNonPartitionApproach(getTableLayoutRequest);
             if (nonPartitionApproach) {
+                System.out.println("Table is not partitioned. Single split.");
                 blockWriter.writeRows((Block block, int rowNum) -> {
                     block.setValue(BLOCK_PARTITION_COLUMN_NAME, rowNum, ALL_PARTITIONS);
                     return 1;
                 });
             }
             else {
+                System.out.println("Table is partitioned. Multiple splits.");
                 List<String> parameters = Arrays.asList(Integer.toString(1));
                 try (Connection connection = getJdbcConnectionFactory().getConnection(getCredentialProvider())) {
                     getPartitionDetails(blockWriter, getPartitionsQuery, parameters, connection);
@@ -239,7 +247,9 @@ public class TeradataMetadataHandler extends JdbcMetadataHandler
     {
         final String getPartitionsCountQuery = "Select  count(distinct partition ) as partition_count FROM " + getTableLayoutRequest.getTableName().getSchemaName() + "." +
                 getTableLayoutRequest.getTableName().getTableName() + " where 1= ?";
+        System.out.println("Checking to be partitioned or not::getPartitionsCountQuery:: " + getPartitionsCountQuery);
         String partitioncount = configOptions.containsKey("partition_count") ? configOptions.get("partition_count") : configOptions.getOrDefault("partitioncount", "500");
+        System.out.println("partitioncount: " + partitioncount);
         int totalPartitionCount = Integer.parseInt(partitioncount);
         int  partitionCount = 0;
         boolean nonPartitionApproach = false;
@@ -251,6 +261,7 @@ public class TeradataMetadataHandler extends JdbcMetadataHandler
                     partitionCount = Integer.parseInt(resultSet.getString("partition_count"));
                 }
                 if (partitionCount > totalPartitionCount) {
+                    System.out.println("partitionCount: " + partitionCount + " exceeds the configured partitioncount: " + totalPartitionCount + "Setting partition to true.");
                     nonPartitionApproach = true;
                 }
                 LOGGER.info("nonPartitionApproach: {}", nonPartitionApproach);
@@ -272,6 +283,7 @@ public class TeradataMetadataHandler extends JdbcMetadataHandler
              ResultSet resultSet = preparedStatement.executeQuery()) {
             // Return a single partition if no partitions defined
             if (!resultSet.next()) {
+                System.out.println("No partitions found. Single partition.");
                 blockWriter.writeRows((Block block, int rowNum) -> {
                     block.setValue(BLOCK_PARTITION_COLUMN_NAME, rowNum, ALL_PARTITIONS);
                     //we wrote 1 row so we return 1
@@ -281,6 +293,7 @@ public class TeradataMetadataHandler extends JdbcMetadataHandler
             else {
                 do {
                     final String partitionName = resultSet.getString(BLOCK_PARTITION_COLUMN_NAME);
+                    System.out.println("getPartitionDetails (all partitions return) partitionName: " + partitionName);
 
                     // 1. Returns all partitions of table, we are not supporting constraints push down to filter partitions.
                     // 2. This API is not paginated, we could use order by and limit clause with offsets here.
@@ -310,12 +323,15 @@ public class TeradataMetadataHandler extends JdbcMetadataHandler
         LOGGER.info("{}: Catalog {}, table {}", getSplitsRequest.getQueryId(), getSplitsRequest.getTableName().getSchemaName(), getSplitsRequest.getTableName().getTableName());
         if (getSplitsRequest.getConstraints().isQueryPassThrough()) {
             LOGGER.info("QPT Split Requested");
+            System.out.println("QPT Split Requested isQueryPassThrough");
             return setupQueryPassthroughSplit(getSplitsRequest);
         }
 
         int partitionContd = decodeContinuationToken(getSplitsRequest);
+        System.out.println("doGetSplits:: continuation " + partitionContd);
         Set<Split> splits = new HashSet<>();
         Block partitions = getSplitsRequest.getPartitions();
+        System.out.println("doGetSplits:: partitions.getRowCount " + partitions.getRowCount());
         // TODO consider splitting further depending on #rows or data size. Could use Hash key for splitting if no partitions.
         for (int curPartition = partitionContd; curPartition < partitions.getRowCount(); curPartition++) {
             FieldReader locationReader = partitions.getFieldReader(BLOCK_PARTITION_COLUMN_NAME);

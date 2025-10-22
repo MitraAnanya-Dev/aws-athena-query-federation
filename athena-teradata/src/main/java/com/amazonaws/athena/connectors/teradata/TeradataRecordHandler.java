@@ -75,12 +75,16 @@ public class TeradataRecordHandler extends JdbcRecordHandler
         PreparedStatement preparedStatement;
 
         if (constraints.isQueryPassThrough()) {
+            System.out.println("buildSplitSql:: invoking buildQueryPassthroughSql in JDBC");
             preparedStatement = buildQueryPassthroughSql(jdbcConnection, constraints);
+            System.out.println("buildSplitSql:: isQueryPassThrough preparedStatement: " + preparedStatement.toString());
         }
         else {
             preparedStatement = jdbcSplitQueryBuilder.buildSql(jdbcConnection, null, tableName.getSchemaName(), tableName.getTableName(), schema, constraints, split);
+            System.out.println("buildSplitSql:: preparedStatement: " + preparedStatement.toString());
         }
         // Disable fetching all rows.
+        System.out.println("buildSplitSql FETCH_SIZE set to " + FETCH_SIZE);
         preparedStatement.setFetchSize(FETCH_SIZE);
         return preparedStatement;
     }

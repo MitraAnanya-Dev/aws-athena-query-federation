@@ -47,7 +47,7 @@ public class TeradataQueryStringBuilder extends JdbcSplitQueryBuilder
             tableName.append(quote(schema)).append('.');
         }
         tableName.append(quote(table));
-
+        System.out.printf("getFromClauseWithSplit FROM %s %n", tableName);
         return String.format(" FROM %s ", tableName);
     }
 
@@ -55,7 +55,9 @@ public class TeradataQueryStringBuilder extends JdbcSplitQueryBuilder
     protected List<String> getPartitionWhereClauses(Split split)
     {
         if (!split.getProperty(TeradataMetadataHandler.BLOCK_PARTITION_COLUMN_NAME).equals("*")) {
-            return Collections.singletonList(TeradataMetadataHandler.BLOCK_PARTITION_COLUMN_NAME + " = " + split.getProperty(TeradataMetadataHandler.BLOCK_PARTITION_COLUMN_NAME));
+            List<String> list = Collections.singletonList(TeradataMetadataHandler.BLOCK_PARTITION_COLUMN_NAME + " = " + split.getProperty(TeradataMetadataHandler.BLOCK_PARTITION_COLUMN_NAME));
+            System.out.printf("getPartitionWhereClauses %s %n", list);
+            return list;
         }
 
         return Collections.emptyList();
@@ -65,6 +67,7 @@ public class TeradataQueryStringBuilder extends JdbcSplitQueryBuilder
     @Override
     protected String appendLimitOffset(Split split, Constraints constraints)
     {
+        System.out.println("Returning empty string as Teradata does not support LIMIT clause");
         return emptyString;
     }
 }

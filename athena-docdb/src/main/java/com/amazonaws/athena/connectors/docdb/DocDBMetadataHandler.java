@@ -66,6 +66,7 @@ import software.amazon.awssdk.services.secretsmanager.SecretsManagerClient;
 import java.util.ArrayList;
 import java.util.LinkedHashSet;
 import java.util.List;
+import java.util.Map;
 import java.util.Set;
 import java.util.stream.Collectors;
 import java.util.stream.Stream;
@@ -138,6 +139,7 @@ public class DocDBMetadataHandler
     {
         String connStr = getConnStr(request);
         String endpoint = resolveWithDefaultCredentials(connStr);
+        logger.info("DocDBMetdataHandler::getOrCreateConn::endpoint:: {} ", endpoint);
         return connectionFactory.getOrCreateConn(endpoint);
     }
 
@@ -147,6 +149,10 @@ public class DocDBMetadataHandler
      */
     private String getConnStr(MetadataRequest request)
     {
+        logger.info("DocDBMetadataHandler::getConnStr::MetadataRequest::CatalogName {}", request.getCatalogName());
+        logger.info("DocDBMetadataHandler::getConnStr::MetadataRequest::RequestType {}", request.getRequestType().name());
+        logger.info("DocDBMetadataHandler::getConnStr::MetadataRequest:: {}", request.toString());
+        logger.info("DocDBMetadataHandler::getConnStr::configOptions:: {}", configOptions);
         String conStr = configOptions.get(request.getCatalogName());
         if (conStr == null) {
             logger.info("getConnStr: No environment variable found for catalog {} , using default {}",
@@ -187,7 +193,13 @@ public class DocDBMetadataHandler
                                 .toArray(String[]::new))
         ));
 
-        return new GetDataSourceCapabilitiesResponse(request.getCatalogName(), capabilities.build());
+        Map<String, List<OptimizationSubType>> builtCapabilities = capabilities.build();
+        logger.info("DocDB Data Source Capabilities: {}", builtCapabilities);
+        logger.info("Supported Functions: {}", supportedFunctions.stream()
+                .map(f -> f.getFunctionName().getFunctionName())
+                .collect(java.util.stream.Collectors.toList()));
+
+        return new GetDataSourceCapabilitiesResponse(request.getCatalogName(), builtCapabilities);
     }
 
     /**
@@ -376,6 +388,7 @@ public class DocDBMetadataHandler
     @Override
     public GetSplitsResponse doGetSplits(BlockAllocator blockAllocator, GetSplitsRequest request)
     {
+        logger.info("DocDBMetadataHandler::doGetSplits::GetSplitsRequest:: {} ", request);
         //Every split must have a unique location if we wish to spill to avoid failures
         SpillLocation spillLocation = makeSpillLocation(request);
 

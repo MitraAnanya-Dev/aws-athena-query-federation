@@ -179,11 +179,13 @@ public abstract class RecordHandler
             throws Exception
     {
         logger.info("doHandleRequest: request[{}]", req);
+        System.out.println("doHandleRequest: RecordRequest: " + req);
         RecordRequestType type = req.getRequestType();
         switch (type) {
             case READ_RECORDS:
                 try (RecordResponse response = doReadRecords(allocator, (ReadRecordsRequest) req)) {
                     logger.info("doHandleRequest: response[{}]", response);
+                    System.out.println("doHandleRequest: RecordResponse " + response);
                     assertNotNull(response);
                     objectMapper.writeValue(outputStream, response);
                 }

@@ -153,6 +153,7 @@ public class DocDBRecordHandler
     @Override
     protected void readWithConstraint(BlockSpiller spiller, ReadRecordsRequest recordsRequest, QueryStatusChecker queryStatusChecker)
     {
+        logger.info("DocDBRecordHandler::readWithConstraint::ReadRecordsRequest:: {} ", recordsRequest);
         final TableName tableNameObj = recordsRequest.getTableName();
         final String schemaName = tableNameObj.getSchemaName();
         final String tableName = recordsRequest.getSchema().getCustomMetadata().getOrDefault(
@@ -161,7 +162,7 @@ public class DocDBRecordHandler
         logger.info("Starting readWithConstraint for schema: {}, table: {}", schemaName, tableName);
         
         final Map<String, ValueSet> constraintSummary = recordsRequest.getConstraints().getSummary();
-        logger.info("Processing {} constraints", constraintSummary.size());
+        logger.info("Processing {} constraints {} ", constraintSummary.size(), constraintSummary);
 
         final MongoClient client = getOrCreateConn(recordsRequest.getSplit());
         final MongoDatabase db;
@@ -175,7 +176,7 @@ public class DocDBRecordHandler
         if (queryPlan != null) {
             hasQueryPlan = true;
             plan = SubstraitRelUtils.deserializeSubstraitPlan(queryPlan.getSubstraitPlan());
-            logger.info("Using Substrait query plan for optimization");
+            logger.info("Using Substrait query plan for optimization {} ", plan);
         }
         else {
             hasQueryPlan = false;
@@ -285,6 +286,7 @@ public class DocDBRecordHandler
                                 break;
                         }
                         if (!matched) {
+                            logger.info("Record not written:: field {} rowNum {} value {} ", nextField.getName(), rowNum, value);
                             return 0;
                         }
                     }
@@ -298,7 +300,7 @@ public class DocDBRecordHandler
             });
         }
 
-        logger.info("readWithConstraint: numRows[{}] numResultRows[{}]", numRows, numResultRows.get());
+        logger.info("readWithConstraint: numRows (written record count) [{}] numResultRows (read from Mongo record count) [{}]", numRows, numResultRows.get());
     }
 
     /**
