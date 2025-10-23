@@ -1,0 +1,6 @@
+FROM maven:3.8-openjdk-17
+
+WORKDIR /workspace
+COPY . .
+
+RUN mvn clean compile -DskipTests -Dcheckstyle.skip=true -pl athena-federation-sdk,athena-oracle -am

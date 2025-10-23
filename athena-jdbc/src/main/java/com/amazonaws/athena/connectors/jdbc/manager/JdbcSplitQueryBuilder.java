@@ -26,6 +26,9 @@ import com.amazonaws.athena.connector.lambda.domain.predicate.Range;
 import com.amazonaws.athena.connector.lambda.domain.predicate.SortedRangeSet;
 import com.amazonaws.athena.connector.lambda.domain.predicate.ValueSet;
 import com.amazonaws.athena.connector.lambda.exceptions.AthenaConnectorException;
+import com.amazonaws.athena.connector.substrait.SubstraitSqlUtils;
+import com.amazonaws.athena.connectors.jdbc.visitor.FilterRemovalVisitor;
+import com.amazonaws.athena.connectors.jdbc.visitor.SubstraitAccumulatorVisitor;
 import com.google.common.base.Joiner;
 import com.google.common.base.Preconditions;
 import com.google.common.base.Strings;
@@ -35,6 +38,14 @@ import org.apache.arrow.vector.types.Types;
 import org.apache.arrow.vector.types.pojo.ArrowType;
 import org.apache.arrow.vector.types.pojo.Field;
 import org.apache.arrow.vector.types.pojo.Schema;
+import org.apache.calcite.sql.SqlDialect;
+import org.apache.calcite.sql.SqlIdentifier;
+import org.apache.calcite.sql.SqlNode;
+import org.apache.calcite.sql.SqlNodeList;
+import org.apache.calcite.sql.SqlSelect;
+import org.apache.calcite.sql.SqlBasicCall;
+import org.apache.calcite.sql.SqlKind;
+import org.apache.calcite.sql.dialect.AnsiSqlDialect;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import software.amazon.awssdk.services.glue.model.ErrorDetails;
@@ -50,8 +61,10 @@ import java.time.LocalDateTime;
 import java.time.ZoneOffset;
 import java.util.ArrayList;
 import java.util.Collections;
+import java.util.HashSet;
 import java.util.List;
 import java.util.Map;
+import java.util.Set;
 import java.util.TimeZone;
 import java.util.concurrent.TimeUnit;
 import java.util.stream.Collectors;
@@ -130,41 +143,77 @@ public abstract class JdbcSplitQueryBuilder
             final String columnNames)
             throws SQLException
     {
+        LOGGER.info("=== JDBC QUERY BUILDER DETAILS ===");
+        LOGGER.info("Target table: {}.{}.{}", catalog, schema, table);
+        LOGGER.info("Selected columns: {}", columnNames);
+        LOGGER.info("Table schema fields: {}", tableSchema.getFields().size());
+        
+        if (constraints.getQueryPlan() != null) {
+            LOGGER.info("=== SUBSTRAIT QUERY PROCESSING ===");
+            LOGGER.info("Query plan size: {} bytes", constraints.getQueryPlan().getSubstraitPlan().length());
+            SqlDialect sqlDialect = getSqlDialect();
+            LOGGER.info("SQL dialect: {}", sqlDialect.getClass().getSimpleName());
+            return prepareStatementWithSql(jdbcConnection, constraints, sqlDialect, split, catalog, schema, table, columnNames, tableSchema);
+        }
+
+        LOGGER.info("=== TRADITIONAL CONSTRAINT PROCESSING ===");
         StringBuilder sql = new StringBuilder();
         sql.append("SELECT ");
         sql.append(columnNames);
 
         if (columnNames.isEmpty()) {
             sql.append("null");
+            LOGGER.info("No columns selected, using null");
         }
-        sql.append(getFromClauseWithSplit(catalog, schema, table, split));
+        
+        String fromClause = getFromClauseWithSplit(catalog, schema, table, split);
+        sql.append(fromClause);
+        LOGGER.info("FROM clause: {}", fromClause);
 
         List<TypeAndValue> accumulator = new ArrayList<>();
 
         List<String> clauses = toConjuncts(tableSchema.getFields(), constraints, accumulator, split.getProperties());
-        clauses.addAll(getPartitionWhereClauses(split));
+        LOGGER.info("Generated WHERE clauses from constraints: {}", clauses);
+        
+        List<String> partitionClauses = getPartitionWhereClauses(split);
+        clauses.addAll(partitionClauses);
+        LOGGER.info("Added partition WHERE clauses: {}", partitionClauses);
+        
         if (!clauses.isEmpty()) {
-            sql.append(" WHERE ")
-                    .append(Joiner.on(" AND ").join(clauses));
+            String whereClause = " WHERE " + Joiner.on(" AND ").join(clauses);
+            sql.append(whereClause);
+            LOGGER.info("Complete WHERE clause: {}", whereClause);
+        } else {
+            LOGGER.info("No WHERE clauses generated");
         }
 
         String orderByClause = extractOrderByClause(constraints);
-
         if (!Strings.isNullOrEmpty(orderByClause)) {
             sql.append(" ").append(orderByClause);
+            LOGGER.info("ORDER BY clause: {}", orderByClause);
         }
 
         if (constraints.getLimit() > 0) {
-            sql.append(appendLimitOffset(split, constraints));
+            String limitClause = appendLimitOffset(split, constraints);
+            sql.append(limitClause);
+            LOGGER.info("LIMIT clause: {}", limitClause);
         }
         else {
-            sql.append(appendLimitOffset(split)); // legacy method to preserve functionality of existing connector impls
+            String limitClause = appendLimitOffset(split);
+            sql.append(limitClause);
+            LOGGER.info("Legacy LIMIT clause: {}", limitClause);
         }
-        LOGGER.info("Generated SQL : {}", sql.toString());
+        
+        LOGGER.info("=== FINAL GENERATED SQL ===");
+        LOGGER.info("Final SQL query: {}", sql.toString());
+        LOGGER.info("Parameter count: {}", accumulator.size());
+        
         PreparedStatement statement = jdbcConnection.prepareStatement(sql.toString());
-        // TODO all types, converts Arrow values to JDBC.
+        
+        // Log parameter binding details
         for (int i = 0; i < accumulator.size(); i++) {
             TypeAndValue typeAndValue = accumulator.get(i);
+            LOGGER.info("Parameter {}: type={}, value={}", i + 1, typeAndValue.getType(), typeAndValue.getValue());
 
             Types.MinorType minorTypeForArrowType = Types.getMinorTypeForArrowType(typeAndValue.getType());
 
@@ -366,5 +415,284 @@ public abstract class JdbcSplitQueryBuilder
     protected String appendLimitOffset(Split split, Constraints constraints)
     {
         return " LIMIT " + constraints.getLimit();
+    }
+
+    protected String appendLimitOffsetWithValue(String limit, String offset)
+    {
+        return "LIMIT " + limit;
+    }
+
+    protected SqlDialect getSqlDialect()
+    {
+        return AnsiSqlDialect.DEFAULT;
+    }
+
+    protected PreparedStatement prepareStatementWithSql(Connection jdbcConnection, Constraints constraints, SqlDialect sqlDialect,
+                                                        Split split, final String catalog,
+                                                        final String schema,
+                                                        final String table, final String columnNames, final Schema tableSchema)
+    {
+        try {
+            LOGGER.info("=== SUBSTRAIT QUERY PLAN PROCESSING ===");
+            String base64EncodedPlan = constraints.getQueryPlan().getSubstraitPlan();
+            LOGGER.info("Base64 encoded plan length: {} characters", base64EncodedPlan.length());
+            LOGGER.info("SQL dialect: {}", sqlDialect.getClass().getSimpleName());
+            LOGGER.info("Target table: {}.{}.{}", catalog, schema, table);
+            LOGGER.info("Table schema: {} fields", tableSchema.getFields().size());
+
+            SqlNode sqlNode = SubstraitSqlUtils.deserializeSubstraitPlan(base64EncodedPlan, sqlDialect, schema, table, tableSchema);
+            LOGGER.info("Deserialized SQL node type: {}", sqlNode.getClass().getSimpleName());
+            
+            List<SubstraitTypeAndValue> accumulator = new ArrayList<>();
+
+            SqlSelect select;
+
+            if (!(sqlNode instanceof SqlSelect)) {
+                LOGGER.error("Unsupported Query Type: {}. Only SELECT Query is supported.", sqlNode.getClass().getSimpleName());
+                throw new RuntimeException("Unsupported Query Type. Only SELECT Query is supported.");
+            }
+
+            select = (SqlSelect) sqlNode;
+            LOGGER.info("Processing SELECT query from Substrait plan");
+
+            StringBuilder sql = new StringBuilder();
+            sql.append("SELECT ");
+            
+            // For Substrait queries, we need to extract the actual projected columns
+            // from the Substrait plan and use only those columns, not all table columns
+            String substraitSelectList = select.getSelectList().toSqlString(sqlDialect).getSql();
+            LOGGER.info("Raw Substrait select list: {}", substraitSelectList);
+            
+            // Use proper SQL parsing instead of string splitting to handle complex expressions
+            SqlNodeList selectList = select.getSelectList();
+            List<String> projectedColumns = new ArrayList<>();
+            Set<String> partitionColumns = new HashSet<>();
+            
+            // Get actual partition columns from split properties (more accurate than hardcoded patterns)
+            if (split.getProperties() != null) {
+                for (String key : split.getProperties().keySet()) {
+                    partitionColumns.add(key.toLowerCase());
+                }
+            }
+            LOGGER.info("Actual partition columns from split: {}", partitionColumns);
+            
+            for (SqlNode selectItem : selectList) {
+                boolean shouldInclude = true;
+                String columnExpression = null;
+                
+                if (selectItem instanceof SqlIdentifier) {
+                    // Simple column reference: column_name
+                    SqlIdentifier identifier = (SqlIdentifier) selectItem;
+                    String columnName = identifier.getSimple().toLowerCase();
+                    
+                    // Skip partition columns that don't exist in actual database table
+                    if (partitionColumns.contains(columnName)) {
+                        LOGGER.info("Skipping partition column: {}", columnName);
+                        shouldInclude = false;
+                    } else {
+                        // Use clean column name without alias
+                        columnExpression = "\"" + identifier.getSimple() + "\"";
+                    }
+                } else if (selectItem instanceof SqlBasicCall && 
+                          ((SqlBasicCall) selectItem).getOperator().getKind() == SqlKind.AS) {
+                    // Handle aliased expressions: "column_name" AS "alias"
+                    SqlBasicCall asCall = (SqlBasicCall) selectItem;
+                    SqlNode sourceExpr = asCall.operand(0);
+                    
+                    if (sourceExpr instanceof SqlIdentifier) {
+                        SqlIdentifier sourceId = (SqlIdentifier) sourceExpr;
+                        String columnName = sourceId.getSimple().toLowerCase();
+                        
+                        // Skip partition columns
+                        if (partitionColumns.contains(columnName)) {
+                            LOGGER.info("Skipping aliased partition column: {}", columnName);
+                            shouldInclude = false;
+                        } else {
+                            // Use clean column name without alias for simple columns
+                            columnExpression = "\"" + sourceId.getSimple() + "\"";
+                        }
+                    } else {
+                        // Complex expression with alias - keep as is
+                        columnExpression = selectItem.toSqlString(sqlDialect).getSql();
+                    }
+                } else {
+                    // Handle other complex expressions
+                    columnExpression = selectItem.toSqlString(sqlDialect).getSql();
+                    
+                    // Check if this is a partition column (even if aliased)
+                    for (String partitionCol : partitionColumns) {
+                        if (columnExpression.toLowerCase().contains("\"" + partitionCol.toLowerCase() + "\"") ||
+                            columnExpression.toLowerCase().contains(partitionCol.toLowerCase() + " ")) {
+                            LOGGER.info("Skipping partition column expression: {}", columnExpression);
+                            shouldInclude = false;
+                            break;
+                        }
+                    }
+                    
+                    if (shouldInclude) {
+                        LOGGER.info("Including complex expression: {}", columnExpression);
+                    }
+                }
+                
+                if (shouldInclude && columnExpression != null) {
+                    projectedColumns.add(columnExpression);
+                }
+            }
+            
+            // Fallback: if no columns remain after filtering, use a constant to prevent empty SELECT
+            String finalProjection = projectedColumns.isEmpty() ? "1 AS dummy_column" : String.join(", ", projectedColumns);
+            sql.append(finalProjection);
+            LOGGER.info("Final projected columns: {}", finalProjection);
+
+            String fromClause = getFromClauseWithSplit(catalog, schema, table, split);
+            sql.append(fromClause);
+            LOGGER.info("FROM clause: {}", fromClause);
+
+            SqlNode whereClause = select.getWhere();
+            LOGGER.info("Original WHERE clause from Substrait: {}", whereClause != null ? whereClause.toString() : "null");
+
+            List<String> clauses = new ArrayList<>();
+            List<String> partitionWhereClauses = getPartitionWhereClauses(split);
+            LOGGER.info("Partition WHERE clauses: {}", partitionWhereClauses);
+
+            if (partitionWhereClauses != null && !partitionWhereClauses.isEmpty()) {
+                clauses.addAll(partitionWhereClauses);
+            }
+
+            if (whereClause != null) {
+                LOGGER.info("Processing WHERE clause with FilterRemovalVisitor");
+                whereClause.accept(new FilterRemovalVisitor(split.getProperties().keySet()));
+                
+                LOGGER.info("Processing WHERE clause with SubstraitAccumulatorVisitor");
+                whereClause.accept(new SubstraitAccumulatorVisitor(accumulator, split.getProperties()));
+                
+                String whereClauseSql = whereClause.toSqlString(sqlDialect).getSql();
+                clauses.add(whereClauseSql);
+                LOGGER.info("Processed WHERE clause SQL: {}", whereClauseSql);
+            }
+
+            if (!clauses.isEmpty()) {
+                String completeWhereClause = " WHERE " + String.join(" AND ", clauses);
+                sql.append(completeWhereClause);
+                LOGGER.info("Complete WHERE clause: {}", completeWhereClause);
+            } else {
+                LOGGER.info("No WHERE clauses generated");
+            }
+
+            // Handle GROUP BY clause
+            if (select.getGroup() != null && select.getGroup().size() > 0) {
+                LOGGER.info("Processing GROUP BY clause with {} expressions", select.getGroup().size());
+                List<String> groupByParts = new ArrayList<>();
+                for (SqlNode groupExpr : select.getGroup()) {
+                    String part = groupExpr.toSqlString(sqlDialect).getSql();
+                    groupByParts.add(part);
+                    LOGGER.info("GROUP BY expression: {}", part);
+                }
+                String groupByClause = " GROUP BY " + String.join(", ", groupByParts);
+                sql.append(groupByClause);
+                LOGGER.info("Complete GROUP BY clause: {}", groupByClause);
+            } else {
+                LOGGER.info("No GROUP BY clause found");
+            }
+
+            if (select.getOrderList() != null) {
+                LOGGER.info("Processing ORDER BY clause with {} expressions", select.getOrderList().size());
+                List<String> orderParts = new ArrayList<>();
+                for (SqlNode orderExpr : select.getOrderList()) {
+                    String part = orderExpr.toSqlString(sqlDialect).getSql();
+                    orderParts.add(part);
+                    LOGGER.info("ORDER BY expression: {}", part);
+                }
+                String orderByClause = " ORDER BY " + String.join(", ", orderParts);
+                sql.append(orderByClause);
+                LOGGER.info("Complete ORDER BY clause: {}", orderByClause);
+            }
+
+            String limit = select.getFetch() == null ? null : select.getFetch().toSqlString(sqlDialect).getSql();
+            String offset = select.getOffset() == null ? null : select.getOffset().toSqlString(sqlDialect).getSql();
+            LOGGER.info("LIMIT value: {}, OFFSET value: {}", limit, offset);
+
+            if (limit != null) {
+                String limitOffsetClause = appendLimitOffsetWithValue(limit, offset);
+                sql.append(limitOffsetClause);
+                LOGGER.info("LIMIT/OFFSET clause: {}", limitOffsetClause);
+            }
+
+            LOGGER.info("=== FINAL SUBSTRAIT GENERATED SQL ===");
+            LOGGER.info("Final SQL query: {}", sql.toString());
+            LOGGER.info("Substrait parameter count: {}", accumulator.size());
+
+            // Check for parameter mismatch - if SQL has no placeholders but accumulator has parameters
+            String sqlString = sql.toString();
+            int placeholderCount = sqlString.length() - sqlString.replace("?", "").length();
+            LOGGER.info("SUBSTRAIT Parameter mismatch check: SQL has {} placeholders, accumulator has {} parameters", placeholderCount, accumulator.size());
+            if (placeholderCount == 0 && accumulator.size() > 0) {
+                LOGGER.warn("SUBSTRAIT Parameter mismatch detected: SQL has {} placeholders but {} parameters collected. Clearing parameters.", placeholderCount, accumulator.size());
+                accumulator.clear();
+                LOGGER.info("SUBSTRAIT Parameters cleared. New accumulator size: {}", accumulator.size());
+            }
+
+            PreparedStatement statement = jdbcConnection.prepareStatement(sql.toString());
+
+            for (int i = 0; i < accumulator.size(); i++) {
+                SubstraitTypeAndValue typeAndValue = accumulator.get(i);
+                LOGGER.info("Substrait parameter {}: type={}, value={}", i + 1, typeAndValue.getType(), typeAndValue.getValue());
+                switch (typeAndValue.getType()) {
+                    case BIGINT:
+                        statement.setLong(i + 1, (long) typeAndValue.getValue());
+                        break;
+                    case INTEGER:
+                        statement.setInt(i + 1, ((Number) typeAndValue.getValue()).intValue());
+                        break;
+                    case SMALLINT:
+                        statement.setShort(i + 1, ((Number) typeAndValue.getValue()).shortValue());
+                        break;
+                    case TINYINT:
+                        statement.setByte(i + 1, ((Number) typeAndValue.getValue()).byteValue());
+                        break;
+                    case CHAR:
+                    case FLOAT:
+                        // ToDo: ^ this is not correct
+                    case VARCHAR:
+                        statement.setString(i + 1, String.valueOf(typeAndValue.getValue()));
+                        break;
+                    case VARBINARY:
+                        statement.setBytes(i + 1, (byte[]) typeAndValue.getValue());
+                        break;
+                    case DECIMAL:
+                        statement.setBigDecimal(i + 1, (BigDecimal) typeAndValue.getValue());
+                        break;
+                    case DATE:
+                        if (typeAndValue.getType().getStartUnit() == org.apache.calcite.avatica.util.TimeUnit.DAY) {
+                            long days = ((Number) typeAndValue.getValue()).longValue();
+                            long utcMillis = days * org.apache.calcite.avatica.util.TimeUnit.DAY.multiplier.longValue();
+                            TimeZone aDefault = TimeZone.getDefault();
+                            int timeoffset = aDefault.getOffset(utcMillis);
+                            utcMillis -= timeoffset;
+                            statement.setDate(i + 1, new Date(utcMillis));
+                            // ToDo: ^ this needs to be tested
+                        }
+                        else if (typeAndValue.getType().getStartUnit() == org.apache.calcite.avatica.util.TimeUnit.MILLISECOND) {
+                            long millis = ((Number) typeAndValue.getValue()).longValue();
+                            statement.setTimestamp(i + 1, new Timestamp(millis));
+                        }
+                        else {
+                            throw new AthenaConnectorException(String.format("Can't handle date format: %s, %s", typeAndValue.getType(), typeAndValue.getType()),
+                                    ErrorDetails.builder().errorCode(FederationSourceErrorCode.OPERATION_NOT_SUPPORTED_EXCEPTION.toString()).build());
+                        }
+                        break;
+                    default:
+                        throw new AthenaConnectorException(String.format("Can't handle type: %s, %s", typeAndValue.getType(), typeAndValue.getType()),
+                                ErrorDetails.builder().errorCode(FederationSourceErrorCode.OPERATION_NOT_SUPPORTED_EXCEPTION.toString()).build());
+                }
+            }
+            return statement;
+        }
+        catch (SQLException e) {
+            throw new RuntimeException("SQL Exception", e);
+        }
+        catch (Exception ie) {
+            throw new RuntimeException("Error", ie);
+        }
     }
 }

@@ -90,16 +90,44 @@ public class OracleRecordHandler
     public PreparedStatement buildSplitSql(Connection jdbcConnection, String catalogName, TableName tableName, Schema schema, Constraints constraints, Split split)
             throws SQLException
     {
+        LOGGER.info("=== ORACLE QUERY EXECUTION DETAILS ===");
+        LOGGER.info("Catalog: {}, Schema: {}, Table: {}", catalogName, tableName.getSchemaName(), tableName.getTableName());
+        LOGGER.info("Split properties: {}", split.getProperties());
+        LOGGER.info("Schema fields: {}", schema.getFields().stream().map(f -> f.getName() + ":" + f.getType()).collect(java.util.stream.Collectors.toList()));
+        
+        // Log constraint details
+        LOGGER.info("Constraints summary: {}", constraints.getSummary());
+        LOGGER.info("Query pass-through: {}", constraints.isQueryPassThrough());
+        LOGGER.info("Has query plan (Substrait): {}", constraints.getQueryPlan() != null);
+        LOGGER.info("Limit: {}", constraints.getLimit());
+        
+        if (constraints.getQueryPlan() != null) {
+            LOGGER.info("=== SUBSTRAIT QUERY PLAN DETECTED ===");
+            LOGGER.info("Query plan length: {} bytes", constraints.getQueryPlan().getSubstraitPlan().length());
+        } else {
+            LOGGER.info("=== TRADITIONAL CONSTRAINTS PROCESSING ===");
+            constraints.getSummary().forEach((column, summary) -> 
+                LOGGER.info("Column '{}' constraints: {}", column, summary));
+        }
+
         PreparedStatement preparedStatement;
 
         if (constraints.isQueryPassThrough()) {
+            LOGGER.info("Using query pass-through mode");
             preparedStatement = buildQueryPassthroughSql(jdbcConnection, constraints);
         }
         else {
+            LOGGER.info("Building SQL using JdbcSplitQueryBuilder");
             preparedStatement = jdbcSplitQueryBuilder.buildSql(jdbcConnection, null, tableName.getSchemaName(), tableName.getTableName(), schema, constraints, split);
         }
+        
+        // Log final prepared statement
+        LOGGER.info("=== FINAL PREPARED STATEMENT ===");
+        LOGGER.info("Final prepared statement SQL: {}", preparedStatement.toString());
+        
         // Disable fetching all rows.
         preparedStatement.setFetchSize(FETCH_SIZE);
+        LOGGER.info("Set fetch size to: {}", FETCH_SIZE);
 
         return preparedStatement;
     }
