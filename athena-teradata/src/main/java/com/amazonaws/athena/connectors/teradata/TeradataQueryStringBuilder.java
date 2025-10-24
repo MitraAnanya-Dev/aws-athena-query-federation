@@ -25,6 +25,8 @@ import com.amazonaws.athena.connector.lambda.domain.predicate.Constraints;
 import com.amazonaws.athena.connectors.jdbc.manager.FederationExpressionParser;
 import com.amazonaws.athena.connectors.jdbc.manager.JdbcSplitQueryBuilder;
 import com.google.common.base.Strings;
+import org.apache.calcite.sql.SqlDialect;
+import org.apache.calcite.sql.dialect.TeradataSqlDialect;
 
 import java.util.Collections;
 import java.util.List;
@@ -59,6 +61,12 @@ public class TeradataQueryStringBuilder extends JdbcSplitQueryBuilder
         }
 
         return Collections.emptyList();
+    }
+
+    @Override
+    protected SqlDialect getSqlDialect()
+    {
+        return TeradataSqlDialect.DEFAULT;
     }
 
     //Returning empty string as Teradata does not support LIMIT clause

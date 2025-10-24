@@ -31,7 +31,11 @@ import io.substrait.isthmus.TypeConverter;
 import org.apache.calcite.sql.type.SqlTypeFactoryImpl;
 
 import java.io.IOException;
+import java.util.Arrays;
 import java.util.Base64;
+import java.util.List;
+import java.util.stream.Collectors;
+import java.util.stream.Stream;
 
 /**
  * Utility class for working with Calcite's abstract syntax tree representation of Substrait plans.
@@ -51,7 +55,7 @@ public final class SubstraitSqlUtils
         try {
             // Create schema-aware converter for table/column resolution
             CustomSubstraitToCalcite substraitToCalcite = new CustomSubstraitToCalcite(
-                    SimpleExtension.load(java.util.Collections.emptyList()),
+                    SimpleExtension.load(loadDefaults()),
                     new SqlTypeFactoryImpl(sqlDialect.getTypeSystem()),
                     TypeConverter.DEFAULT,
                     tableName,
@@ -74,7 +78,7 @@ public final class SubstraitSqlUtils
         try {
             // Create standard converter
             SubstraitToCalcite substraitToCalcite = new SubstraitToCalcite(
-                    SimpleExtension.load(java.util.Collections.emptyList()),
+                    SimpleExtension.load(loadDefaults()),
                     new SqlTypeFactoryImpl(sqlDialect.getTypeSystem())
             );
             
@@ -83,6 +87,11 @@ public final class SubstraitSqlUtils
         catch (Exception e) {
             throw new RuntimeException("Failed to parse Substrait plan: " + e.getMessage(), e);
         }
+    }
+
+    private static List<String> loadDefaults() {
+        return Stream.of("boolean", "aggregate_generic", "aggregate_approx", "arithmetic_decimal", "arithmetic", "comparison", "datetime", "logarithmic", "rounding", "rounding_decimal", "string")
+                .map((func) -> String.format("/functions_%s.yaml", func)).collect(Collectors.toList());
     }
     
     /**
