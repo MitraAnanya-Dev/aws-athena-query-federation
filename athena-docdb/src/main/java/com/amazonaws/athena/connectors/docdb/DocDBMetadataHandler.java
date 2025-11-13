@@ -403,12 +403,12 @@ public class DocDBMetadataHandler
         return GlueFieldLexer.lex(name, glueType);
     }
 
-    private synchronized String getConfigOptionsFromFederatedIdentity(Map<String, String> configOptions) {
+    private String getConfigOptionsFromFederatedIdentity(Map<String, String> configOptions) {
         String host = configOptions.get("HOST");
         String port = configOptions.get("PORT");
         
         final String secretName = getSecretNameFromArn(configOptions.get("secret_arn"));
-        String credentials = getCachableSecretsManager().resolveWithDefaultCredentials("${" + secretName + "}");
+        String credentials = getSecret(secretName, getRequestOverrideConfig(configOptions));
         String[] parts = credentials.split(":", 2);
         String username = parts.length > 0 ? parts[0] : "";
         String password = parts.length > 1 ? parts[1] : "";
