@@ -44,8 +44,10 @@ import com.amazonaws.athena.connector.lambda.security.CachableSecretsManager;
 import com.amazonaws.athena.connector.lambda.security.FederatedIdentity;
 import com.amazonaws.athena.connector.lambda.security.KmsEncryptionProvider;
 import com.amazonaws.athena.connector.lambda.serde.VersionedObjectMapperFactory;
+import com.amazonaws.athena.connector.substrait.util.LimitAndSortHelper;
 import com.amazonaws.services.lambda.runtime.Context;
 import com.fasterxml.jackson.databind.ObjectMapper;
+import io.substrait.proto.Plan;
 import org.apache.commons.lang3.tuple.Pair;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -66,8 +68,6 @@ import java.util.Map;
 import static com.amazonaws.athena.connector.lambda.handlers.AthenaExceptionFilter.ATHENA_EXCEPTION_FILTER;
 import static com.amazonaws.athena.connector.lambda.handlers.FederationCapabilities.CAPABILITIES;
 import static com.amazonaws.athena.connector.lambda.handlers.SerDeVersion.SERDE_VERSION;
-import com.amazonaws.athena.connector.substrait.util.LimitAndSortHelper;
-import io.substrait.proto.Plan;
 
 /**
  * More specifically, this class is responsible for providing Athena with actual rows level data from our simulated
@@ -178,20 +178,24 @@ public abstract class RecordHandler
     }
 
     protected final void doHandleRequest(BlockAllocator allocator,
-            ObjectMapper objectMapper,
-            RecordRequest req,
-            OutputStream outputStream)
+                                         ObjectMapper objectMapper,
+                                         RecordRequest req,
+                                         OutputStream outputStream)
             throws Exception
     {
         logger.info("doHandleRequest: request[{}]", req);
         RecordRequestType type = req.getRequestType();
+
         switch (type) {
             case READ_RECORDS:
+                long startTime = System.currentTimeMillis();
                 try (RecordResponse response = doReadRecords(allocator, (ReadRecordsRequest) req)) {
                     logger.info("doHandleRequest: response[{}]", response);
                     assertNotNull(response);
                     objectMapper.writeValue(outputStream, response);
                 }
+                long endTime = System.currentTimeMillis();
+                logger.info("Read Records  - doHandleRequest: {}ms to process request", endTime - startTime);
                 return;
             default:
                 throw new AthenaConnectorException("Unknown request type " + type, ErrorDetails.builder().errorCode(FederationSourceErrorCode.INVALID_INPUT_EXCEPTION.toString()).build());
@@ -222,8 +226,8 @@ public abstract class RecordHandler
         try (ConstraintEvaluator evaluator = new ConstraintEvaluator(allocator,
                 request.getSchema(),
                 request.getConstraints());
-                S3BlockSpiller spiller = new S3BlockSpiller(s3Client, spillConfig, allocator, request.getSchema(), evaluator, configOptions);
-                QueryStatusChecker queryStatusChecker = new QueryStatusChecker(athenaClient, athenaInvoker, request.getQueryId())
+             S3BlockSpiller spiller = new S3BlockSpiller(s3Client, spillConfig, allocator, request.getSchema(), evaluator, configOptions);
+             QueryStatusChecker queryStatusChecker = new QueryStatusChecker(athenaClient, athenaInvoker, request.getQueryId())
         ) {
             readWithConstraint(spiller, request, queryStatusChecker);
 
@@ -297,6 +301,13 @@ public abstract class RecordHandler
         //NoOp
     }
 
+    private void assertNotNull(FederationResponse response)
+    {
+        if (response == null) {
+            throw new AthenaConnectorException("Response was null", ErrorDetails.builder().errorCode(FederationSourceErrorCode.INVALID_RESPONSE_EXCEPTION.toString()).build());
+        }
+    }
+
     /**
      * Determines if a LIMIT can be applied and extracts the limit value.
      */
@@ -311,12 +322,5 @@ public abstract class RecordHandler
     protected Pair<Boolean, List<LimitAndSortHelper.GenericSortField>> getSortFromPlan(Plan plan)
     {
         return LimitAndSortHelper.getSortFromPlan(plan);
-    }
-
-    private void assertNotNull(FederationResponse response)
-    {
-        if (response == null) {
-            throw new AthenaConnectorException("Response was null", ErrorDetails.builder().errorCode(FederationSourceErrorCode.INVALID_RESPONSE_EXCEPTION.toString()).build());
-        }
     }
 }

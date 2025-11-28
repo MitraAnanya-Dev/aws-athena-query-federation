@@ -123,7 +123,7 @@ public class DocDBRecordHandler
 
     private static Map<String, Object> documentAsMap(Document document, boolean caseInsensitive)
     {
-        logger.info("documentAsMap: caseInsensitive: {}", caseInsensitive);
+//        logger.info("documentAsMap: caseInsensitive: {}", caseInsensitive);
         Map<String, Object> documentAsMap = (Map<String, Object>) document;
         if (!caseInsensitive) {
             return documentAsMap;

@@ -145,6 +145,8 @@ public class CompositeHandler
     public final void handleRequest(BlockAllocator allocator, FederationRequest rawReq, OutputStream outputStream, ObjectMapper objectMapper)
             throws Exception
     {
+        System.out.println(objectMapper.writeValueAsString(rawReq));
+        long startTime = System.currentTimeMillis();
         if (rawReq instanceof PingRequest) {
             try (PingResponse response = metadataHandler.doPing((PingRequest) rawReq)) {
                 assertNotNull(response);
@@ -165,6 +167,8 @@ public class CompositeHandler
         else {
             throw new AthenaConnectorException("Unknown request class " + rawReq.getClass(), ErrorDetails.builder().errorCode(FederationSourceErrorCode.INVALID_INPUT_EXCEPTION.toString()).build());
         }
+        long endTime = System.currentTimeMillis();
+        logger.info("Total Time - Request completed in {} ms", endTime - startTime);
     }
 
     /**

@@ -172,13 +172,13 @@ public abstract class MetadataHandler
      * @param sourceType Used to aid in logging diagnostic info when raising a support case.
      */
     public MetadataHandler(
-        EncryptionKeyFactory encryptionKeyFactory,
-        SecretsManagerClient secretsManager,
-        AthenaClient athena,
-        String sourceType,
-        String spillBucket,
-        String spillPrefix,
-        java.util.Map<String, String> configOptions)
+            EncryptionKeyFactory encryptionKeyFactory,
+            SecretsManagerClient secretsManager,
+            AthenaClient athena,
+            String sourceType,
+            String spillBucket,
+            String spillPrefix,
+            java.util.Map<String, String> configOptions)
     {
         this.configOptions = configOptions;
         this.encryptionKeyFactory = encryptionKeyFactory;
@@ -218,11 +218,6 @@ public abstract class MetadataHandler
         return secretsManager.getSecret(secretName);
     }
 
-    protected String getSecret(String secretName, AwsRequestOverrideConfiguration requestOverrideConfiguration)
-    {
-        return secretsManager.getSecret(secretName, requestOverrideConfiguration);
-    }
-
     /**
      * Gets the CachableSecretsManager instance used by this handler.
      * This is used by credential providers to reuse the same secrets manager instance.
@@ -238,15 +233,10 @@ public abstract class MetadataHandler
         return (encryptionKeyFactory != null) ? encryptionKeyFactory.create() : null;
     }
 
-    protected EncryptionKey makeEncryptionKey(AwsRequestOverrideConfiguration awsRequestOverrideConfiguration)
-    {
-        return (encryptionKeyFactory != null) ? encryptionKeyFactory.create(awsRequestOverrideConfiguration) : null;
-    }
-
     /**
      * Used to make a spill location for a split. Each split should have a unique spill location, so be sure
      * to call this method once per split!
-     * @param request 
+     * @param request
      * @return A unique spill location.
      */
     protected SpillLocation makeSpillLocation(MetadataRequest request)
@@ -297,44 +287,57 @@ public abstract class MetadataHandler
     }
 
     protected final void doHandleRequest(BlockAllocator allocator,
-            ObjectMapper objectMapper,
-            MetadataRequest req,
-            OutputStream outputStream)
+                                         ObjectMapper objectMapper,
+                                         MetadataRequest req,
+                                         OutputStream outputStream)
             throws Exception
     {
         logger.info("doHandleRequest: request[{}]", req);
         MetadataRequestType type = req.getRequestType();
         switch (type) {
             case LIST_SCHEMAS:
+                long startTime = System.currentTimeMillis();
                 try (ListSchemasResponse response = doListSchemaNames(allocator, (ListSchemasRequest) req)) {
                     logger.info("doHandleRequest: response[{}]", response);
                     assertNotNull(response);
                     objectMapper.writeValue(outputStream, response);
                 }
+                long endTime = System.currentTimeMillis();
+                logger.info("LIST_SCHEMAS - doHandleRequest: Completed in {}ms", endTime - startTime);
                 return;
             case LIST_TABLES:
+                startTime = System.currentTimeMillis();
                 try (ListTablesResponse response = doListTables(allocator, (ListTablesRequest) req)) {
                     logger.info("doHandleRequest: response[{}]", response);
                     assertNotNull(response);
                     objectMapper.writeValue(outputStream, response);
                 }
+                endTime = System.currentTimeMillis();
+                logger.info("LIST_TABLES - doHandleRequest: Completed in {}ms", endTime - startTime);
                 return;
             case GET_TABLE:
+                startTime = System.currentTimeMillis();
                 try (GetTableResponse response = resolveDoGetTableImplementation(allocator, (GetTableRequest) req)) {
                     logger.info("doHandleRequest: response[{}]", response);
                     assertNotNull(response);
                     assertTypes(response);
                     objectMapper.writeValue(outputStream, response);
                 }
+                endTime = System.currentTimeMillis();
+                logger.info("GET_TABLE - doHandleRequest: Completed in {}ms", endTime - startTime);
                 return;
             case GET_TABLE_LAYOUT:
+                startTime = System.currentTimeMillis();
                 try (GetTableLayoutResponse response = doGetTableLayout(allocator, (GetTableLayoutRequest) req)) {
                     logger.info("doHandleRequest: response[{}]", response);
                     assertNotNull(response);
                     objectMapper.writeValue(outputStream, response);
                 }
+                endTime = System.currentTimeMillis();
+                logger.info("GET_TABLE_LAYOUT - doHandleRequest: Completed in {}ms", endTime - startTime);
                 return;
             case GET_SPLITS:
+                startTime = System.currentTimeMillis();
                 FederatedIdentity federatedIdentity = req.getIdentity();
                 Map<String, String> connectorRequestOptions = federatedIdentity.getConfigOptions();
                 if (connectorRequestOptions != null && connectorRequestOptions.get(FAS_TOKEN) != null) {
@@ -347,13 +350,18 @@ public abstract class MetadataHandler
                     assertNotNull(response);
                     objectMapper.writeValue(outputStream, response);
                 }
+                endTime = System.currentTimeMillis();
+                logger.info("GET_SPLITS - doHandleRequest: Completed in {}ms", endTime - startTime);
                 return;
             case GET_DATASOURCE_CAPABILITIES:
+                startTime = System.currentTimeMillis();
                 try (GetDataSourceCapabilitiesResponse response = doGetDataSourceCapabilities(allocator, (GetDataSourceCapabilitiesRequest) req)) {
                     logger.info("doHandleRequest: response[{}]", response);
                     assertNotNull(response);
                     objectMapper.writeValue(outputStream, response);
                 }
+                endTime = System.currentTimeMillis();
+                logger.info("GET_DATASOURCE_CAPABILITIES - doHandleRequest: Completed in {}ms", endTime - startTime);
                 return;
             default:
                 throw new AthenaConnectorException("Unknown request type " + type, ErrorDetails.builder().errorCode(FederationSourceErrorCode.INVALID_INPUT_EXCEPTION.toString()).build());
@@ -470,8 +478,8 @@ public abstract class MetadataHandler
         try (ConstraintEvaluator constraintEvaluator = new ConstraintEvaluator(allocator,
                 constraintSchema.build(),
                 request.getConstraints());
-                QueryStatusChecker queryStatusChecker = new QueryStatusChecker(getAthenaClient(overrideConfig, athena),
-                        athenaInvoker, request.getQueryId())
+             QueryStatusChecker queryStatusChecker = new QueryStatusChecker(getAthenaClient(overrideConfig, athena),
+                     athenaInvoker, request.getQueryId())
         ) {
             Block partitions = allocator.createBlock(partitionSchemaBuilder.build());
             partitions.constrain(constraintEvaluator);
@@ -518,7 +526,7 @@ public abstract class MetadataHandler
      * for pushing down into the source you are querying.
      */
     public abstract void getPartitions(final BlockWriter blockWriter,
-            final GetTableLayoutRequest request, QueryStatusChecker queryStatusChecker)
+                                       final GetTableLayoutRequest request, QueryStatusChecker queryStatusChecker)
             throws Exception;
 
     /**
@@ -560,6 +568,7 @@ public abstract class MetadataHandler
      */
     public PingResponse doPing(PingRequest request)
     {
+        long startTime = System.currentTimeMillis();
         PingResponse response = new PingResponse(request.getCatalogName(), request.getQueryId(), sourceType, CAPABILITIES, SERDE_VERSION);
         try {
             onPing(request);
@@ -567,6 +576,8 @@ public abstract class MetadataHandler
         catch (Exception ex) {
             logger.warn("doPing: encountered an exception while delegating onPing.", ex);
         }
+        long endTime = System.currentTimeMillis();
+        logger.info("doPing: {}ms to process request " + (endTime - startTime));
         return response;
     }
 
@@ -610,5 +621,10 @@ public abstract class MetadataHandler
         for (Field next : response.getSchema().getFields()) {
             SupportedTypes.assertSupported(next);
         }
+    }
+
+    protected String getSecret(String secretName, AwsRequestOverrideConfiguration requestOverrideConfiguration)
+    {
+        return secretsManager.getSecret(secretName, requestOverrideConfiguration);
     }
 }
